@@ -31,6 +31,10 @@ DATA_DIR = Path("./raw_data")
 DOWNLOADS_DIR = Path("./downloads")
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
+# Parallel processing defaults
+DEFAULT_WORKERS = 3   # Conservative for downloads
+MAX_WORKERS = 6       # Don't overwhelm servers
+
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
@@ -287,13 +291,15 @@ class RosettaDownloader:
         except zipfile.BadZipFile:
             logger.warning(f"  → Could not extract {filepath.name} (not a valid ZIP)")
     
-    def download_all(self, layers: Optional[List[str]] = None, parallel: bool = False) -> List[Dict]:
+    def download_all(self, layers: Optional[List[str]] = None, parallel: bool = False, 
+                     workers: int = DEFAULT_WORKERS) -> List[Dict]:
         """
         Download all data sources.
         
         Args:
             layers: Optional filter for specific layers (identity, statistical, knowledge, severity)
             parallel: Use parallel downloads (be careful with rate limits)
+            workers: Number of parallel workers (default: 3, max: 6)
             
         Returns:
             List of result dictionaries
@@ -304,12 +310,15 @@ class RosettaDownloader:
         
         logger.info(f"Starting download of {len(sources)} data sources...")
         logger.info(f"Data directory: {self.data_dir.absolute()}")
+        if parallel:
+            workers = min(max(1, workers), MAX_WORKERS)
+            logger.info(f"Parallel mode: {workers} workers")
         print("-" * 60)
         
         results = []
         
         if parallel:
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {executor.submit(self.download_file, src): src for src in sources}
                 for future in as_completed(futures):
                     results.append(future.result())
@@ -415,6 +424,8 @@ def main():
                         help='Download only specific layer')
     parser.add_argument('--verify', action='store_true', help='Verify existing downloads')
     parser.add_argument('--parallel', action='store_true', help='Use parallel downloads')
+    parser.add_argument('--workers', '-w', type=int, default=DEFAULT_WORKERS,
+                       help=f'Number of parallel workers (default: {DEFAULT_WORKERS}, max: {MAX_WORKERS})')
     parser.add_argument('--data-dir', type=Path, default=DATA_DIR, help='Data directory')
     
     args = parser.parse_args()
@@ -430,7 +441,8 @@ def main():
         return
     
     layers = [args.layer] if args.layer else None
-    results = downloader.download_all(layers=layers, parallel=args.parallel)
+    workers = min(max(1, args.workers), MAX_WORKERS)
+    results = downloader.download_all(layers=layers, parallel=args.parallel, workers=workers)
     downloader.print_summary(results)
 
 

@@ -22,6 +22,8 @@ import argparse
 import logging
 import json
 import re
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime
 from html import unescape
@@ -41,8 +43,12 @@ MEDLINEPLUS_URL = "https://connect.medlineplus.gov/service"
 LOINC_OID = "2.16.840.1.113883.6.1"
 
 # Rate limiting: 100 requests per minute = ~0.6 sec between requests
-REQUEST_DELAY = 0.7  # seconds between requests
+REQUEST_DELAY = 0.7  # seconds between requests (for sequential mode)
 BATCH_SIZE = 50      # commit to DB every N fetches
+
+# Parallel processing defaults
+DEFAULT_WORKERS = 5  # Concurrent requests (conservative for API limits)
+MAX_WORKERS = 10     # Maximum allowed workers
 
 
 def strip_html(text: str) -> str:
@@ -191,8 +197,8 @@ def get_codes_to_fetch(conn: sqlite3.Connection, progress: dict, limit: int = No
     return to_fetch
 
 
-def run_fetcher(limit: int = None, resume: bool = True):
-    """Main fetcher loop."""
+def run_fetcher(limit: int = None, resume: bool = True, workers: int = 1):
+    """Main fetcher loop with optional parallel processing."""
     conn = sqlite3.connect(str(DB_PATH))
     
     # Load or reset progress
@@ -208,6 +214,12 @@ def run_fetcher(limit: int = None, resume: bool = True):
     if not codes_to_fetch:
         logger.info("No codes to fetch - all done!")
         conn.close()
+        return
+    
+    # Use parallel mode if workers > 1
+    if workers > 1:
+        conn.close()
+        run_fetcher_parallel(codes_to_fetch, progress, workers)
         return
     
     logger.info(f"Fetching descriptions for {len(codes_to_fetch)} LOINC codes...")
@@ -288,6 +300,146 @@ def run_fetcher(limit: int = None, resume: bool = True):
     print(f"  Fetched: {fetched_count}")
     print(f"  No result: {no_result_count}")
     print(f"  Errors: {error_count}")
+    print(f"  Time: {elapsed/60:.1f} minutes")
+    print(f"  Progress saved to: {PROGRESS_FILE}")
+
+
+def run_fetcher_parallel(codes_to_fetch: list, progress: dict, workers: int):
+    """Parallel fetcher using asyncio with semaphore-controlled concurrency."""
+    workers = min(workers, MAX_WORKERS)
+    logger.info(f"Fetching descriptions for {len(codes_to_fetch)} LOINC codes with {workers} workers...")
+    
+    # Estimate time (parallel is faster but still rate-limited per worker)
+    effective_rate = workers / REQUEST_DELAY  # requests per second
+    est_minutes = len(codes_to_fetch) / effective_rate / 60
+    logger.info(f"Estimated time: {est_minutes:.1f} minutes (parallel mode)")
+    
+    # Shared state for tracking
+    state = {
+        'fetched_count': 0,
+        'no_result_count': 0,
+        'error_count': 0,
+        'processed': 0,
+        'total': len(codes_to_fetch),
+        'start_time': time.time(),
+        'progress': progress,
+        'lock': asyncio.Lock(),
+    }
+    
+    async def fetch_single(loinc_code: str, name: str, semaphore: asyncio.Semaphore, 
+                          executor: ThreadPoolExecutor):
+        """Fetch a single code with semaphore control."""
+        async with semaphore:
+            loop = asyncio.get_event_loop()
+            # Run blocking request in thread pool
+            result = await loop.run_in_executor(executor, fetch_description, loinc_code)
+            
+            # Rate limiting per worker
+            await asyncio.sleep(REQUEST_DELAY)
+            
+            return (loinc_code, result)
+    
+    async def process_results(results: list, conn: sqlite3.Connection):
+        """Process batch of results and update DB."""
+        async with state['lock']:
+            for loinc_code, result in results:
+                state['processed'] += 1
+                
+                if 'description' in result:
+                    try:
+                        conn.execute('''
+                            INSERT OR REPLACE INTO concept_description 
+                            (loinc_code, source, language, description_type, description_text, 
+                             source_url, retrieved_date)
+                            VALUES (?, ?, ?, ?, ?, ?, date('now'))
+                        ''', (
+                            loinc_code, 'MedlinePlus', 'en', 'consumer',
+                            result['description'][:2000],
+                            result.get('url', '')
+                        ))
+                        state['fetched_count'] += 1
+                        state['progress']['fetched'].append(loinc_code)
+                    except Exception as e:
+                        logger.error(f"DB error for {loinc_code}: {e}")
+                        state['error_count'] += 1
+                        
+                elif result.get('no_result'):
+                    state['no_result_count'] += 1
+                    state['progress']['no_result'].append(loinc_code)
+                else:
+                    state['error_count'] += 1
+                    state['progress']['errors'].append({
+                        'code': loinc_code, 
+                        'error': result.get('error', 'unknown')
+                    })
+            
+            conn.commit()
+            save_progress(state['progress'])
+            
+            # Progress log
+            elapsed = time.time() - state['start_time']
+            rate = state['processed'] / elapsed * 60 if elapsed > 0 else 0
+            remaining = (state['total'] - state['processed']) / rate if rate > 0 else 0
+            logger.info(f"Progress: {state['processed']}/{state['total']} | "
+                       f"✓{state['fetched_count']} -{state['no_result_count']} ✗{state['error_count']} | "
+                       f"Rate: {rate:.0f}/min | ETA: {remaining:.1f} min")
+    
+    async def run_all():
+        """Main async entry point."""
+        semaphore = asyncio.Semaphore(workers)
+        conn = sqlite3.connect(str(DB_PATH))
+        
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                # Process in batches to manage memory and provide progress
+                batch_size = BATCH_SIZE
+                for batch_start in range(0, len(codes_to_fetch), batch_size):
+                    batch = codes_to_fetch[batch_start:batch_start + batch_size]
+                    
+                    # Create tasks for this batch
+                    tasks = [
+                        fetch_single(code, name, semaphore, executor)
+                        for code, name in batch
+                    ]
+                    
+                    # Run batch with exception handling
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    # Filter out exceptions and process
+                    valid_results = []
+                    for i, r in enumerate(results):
+                        if isinstance(r, Exception):
+                            code = batch[i][0]
+                            logger.warning(f"Exception for {code}: {r}")
+                            state['error_count'] += 1
+                            state['progress']['errors'].append({'code': code, 'error': str(r)})
+                        else:
+                            valid_results.append(r)
+                    
+                    await process_results(valid_results, conn)
+                    
+        except KeyboardInterrupt:
+            logger.info("\nInterrupted by user. Saving progress...")
+        finally:
+            conn.commit()
+            save_progress(state['progress'])
+            conn.close()
+    
+    # Run the async code
+    try:
+        asyncio.run(run_all())
+    except KeyboardInterrupt:
+        pass
+    
+    # Summary
+    elapsed = time.time() - state['start_time']
+    print("\n" + "=" * 50)
+    print("FETCH COMPLETE (PARALLEL MODE)")
+    print("=" * 50)
+    print(f"  Workers: {workers}")
+    print(f"  Fetched: {state['fetched_count']}")
+    print(f"  No result: {state['no_result_count']}")
+    print(f"  Errors: {state['error_count']}")
     print(f"  Time: {elapsed/60:.1f} minutes")
     print(f"  Progress saved to: {PROGRESS_FILE}")
 
@@ -375,17 +527,24 @@ def main():
     parser = argparse.ArgumentParser(
         description='Fetch MedlinePlus descriptions for LOINC codes',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+        epilog=f'''
 Examples:
-  python fetch_descriptions.py              # Fetch all missing
+  python fetch_descriptions.py              # Fetch all missing (sequential)
+  python fetch_descriptions.py --workers 5  # Fetch with 5 parallel workers
   python fetch_descriptions.py --limit 500  # Fetch 500 at a time
   python fetch_descriptions.py --status     # Show current status
   python fetch_descriptions.py --reprocess  # Reprocess cached responses into DB
   python fetch_descriptions.py --reset      # Reset progress and start fresh
+
+Parallel mode:
+  Default workers: {DEFAULT_WORKERS}, Max workers: {MAX_WORKERS}
+  MedlinePlus allows ~100 req/min, so 5 workers is a safe default.
         '''
     )
     
     parser.add_argument('--limit', type=int, help='Maximum number of codes to fetch')
+    parser.add_argument('--workers', '-w', type=int, default=1,
+                       help=f'Number of parallel workers (default: 1, max: {MAX_WORKERS})')
     parser.add_argument('--status', action='store_true', help='Show current status')
     parser.add_argument('--reprocess', action='store_true', help='Reprocess cached responses into database')
     parser.add_argument('--reset', action='store_true', help='Reset progress tracking')
@@ -405,7 +564,8 @@ Examples:
         else:
             print("No progress file found.")
     else:
-        run_fetcher(limit=args.limit, resume=not args.no_resume)
+        workers = min(max(1, args.workers), MAX_WORKERS)
+        run_fetcher(limit=args.limit, resume=not args.no_resume, workers=workers)
 
 
 if __name__ == "__main__":

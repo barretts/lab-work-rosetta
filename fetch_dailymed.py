@@ -22,6 +22,8 @@ import json
 import argparse
 import logging
 import re
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from lxml import etree
 from pathlib import Path
 from datetime import datetime
@@ -43,6 +45,10 @@ BASE_URL = "https://dailymed.nlm.nih.gov/dailymed/services/v2"
 # Rate limiting - be nice to NLM
 REQUEST_DELAY = 0.3
 BATCH_SIZE = 50
+
+# Parallel processing defaults
+DEFAULT_WORKERS = 4   # DailyMed is fairly permissive
+MAX_WORKERS = 8
 
 # Common drugs that affect lab tests
 PRIORITY_DRUGS = [
@@ -301,7 +307,7 @@ def extract_lab_interactions(label_data: dict) -> dict:
     return result
 
 
-def fetch_drug_labels(drugs: list = None, limit: int = None):
+def fetch_drug_labels(drugs: list = None, limit: int = None, workers: int = 1):
     """Fetch and process drug labels for lab interactions."""
     if drugs is None:
         drugs = PRIORITY_DRUGS
@@ -318,6 +324,11 @@ def fetch_drug_labels(drugs: list = None, limit: int = None):
     
     if not to_process:
         print("All drugs already processed!")
+        return
+    
+    # Use parallel mode if workers > 1
+    if workers > 1:
+        fetch_drug_labels_parallel(to_process, progress, workers)
         return
     
     print(f"Fetching DailyMed labels for {len(to_process)} drugs...")
@@ -400,6 +411,151 @@ def fetch_drug_labels(drugs: list = None, limit: int = None):
     print(f"\nComplete: {found_interactions} lab interactions found")
 
 
+def fetch_single_drug(drug: str) -> dict:
+    """Fetch a single drug's label and extract interactions (for parallel use)."""
+    results = search_drug(drug)
+    
+    if not results:
+        return {'drug': drug, 'found': False, 'interactions': []}
+    
+    setid = results[0].get('setid')
+    if not setid:
+        return {'drug': drug, 'found': False, 'interactions': []}
+    
+    label = fetch_label(setid)
+    extracted = extract_lab_interactions(label)
+    
+    return {
+        'drug': drug,
+        'found': True,
+        'setid': setid,
+        'interactions': extracted.get('lab_interactions', [])
+    }
+
+
+def fetch_drug_labels_parallel(to_process: list, progress: dict, workers: int):
+    """Parallel drug label fetcher using asyncio with semaphore-controlled concurrency."""
+    workers = min(workers, MAX_WORKERS)
+    logger.info(f"Fetching DailyMed labels for {len(to_process)} drugs with {workers} workers...")
+    
+    effective_rate = workers / (REQUEST_DELAY * 2)  # 2 requests per drug (search + label)
+    est_minutes = len(to_process) / effective_rate / 60
+    logger.info(f"Estimated time: {est_minutes:.1f} minutes (parallel mode)")
+    
+    state = {
+        'found_interactions': 0,
+        'processed': 0,
+        'total': len(to_process),
+        'start_time': time.time(),
+        'progress': progress,
+        'lock': asyncio.Lock(),
+    }
+    
+    async def fetch_single(drug: str, semaphore: asyncio.Semaphore, 
+                          executor: ThreadPoolExecutor):
+        """Fetch a single drug with semaphore control."""
+        async with semaphore:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(executor, fetch_single_drug, drug)
+            await asyncio.sleep(REQUEST_DELAY)
+            return result
+    
+    async def process_results(results: list, conn: sqlite3.Connection):
+        """Process batch of results and update DB."""
+        async with state['lock']:
+            for result in results:
+                state['processed'] += 1
+                drug = result['drug']
+                
+                if result.get('interactions'):
+                    state['found_interactions'] += len(result['interactions'])
+                    
+                    for interaction in result['interactions']:
+                        conn.execute('''
+                            INSERT INTO drug_lab_interaction 
+                            (drug_name, setid, keyword, interaction_text)
+                            VALUES (?, ?, ?, ?)
+                        ''', (
+                            drug,
+                            result.get('setid', ''),
+                            interaction.get('keyword', ''),
+                            interaction.get('text', '')
+                        ))
+                
+                state['progress']['drugs_processed'].append(drug.lower())
+            
+            conn.commit()
+            save_progress(state['progress'])
+            
+            elapsed = time.time() - state['start_time']
+            rate = state['processed'] / elapsed * 60 if elapsed > 0 else 0
+            remaining = (state['total'] - state['processed']) / rate if rate > 0 else 0
+            logger.info(f"Progress: {state['processed']}/{state['total']} | "
+                       f"Interactions: {state['found_interactions']} | "
+                       f"Rate: {rate:.0f}/min | ETA: {remaining:.1f} min")
+    
+    async def run_all():
+        """Main async entry point."""
+        semaphore = asyncio.Semaphore(workers)
+        conn = sqlite3.connect(str(DB_PATH), timeout=30)
+        
+        # Ensure table exists
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS drug_lab_interaction (
+                id INTEGER PRIMARY KEY,
+                drug_name TEXT NOT NULL,
+                setid TEXT,
+                keyword TEXT,
+                interaction_text TEXT,
+                source TEXT DEFAULT 'DailyMed',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_drug_lab_drug ON drug_lab_interaction(drug_name)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_drug_lab_keyword ON drug_lab_interaction(keyword)')
+        
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for batch_start in range(0, len(to_process), BATCH_SIZE):
+                    batch = to_process[batch_start:batch_start + BATCH_SIZE]
+                    
+                    tasks = [
+                        fetch_single(drug, semaphore, executor)
+                        for drug in batch
+                    ]
+                    
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    valid_results = []
+                    for i, r in enumerate(results):
+                        if isinstance(r, Exception):
+                            logger.warning(f"Exception for {batch[i]}: {r}")
+                        else:
+                            valid_results.append(r)
+                    
+                    await process_results(valid_results, conn)
+                    
+        except KeyboardInterrupt:
+            logger.info("\nInterrupted. Saving progress...")
+        finally:
+            conn.commit()
+            save_progress(state['progress'])
+            conn.close()
+    
+    try:
+        asyncio.run(run_all())
+    except KeyboardInterrupt:
+        pass
+    
+    elapsed = time.time() - state['start_time']
+    print("\n" + "=" * 50)
+    print("DAILYMED FETCH COMPLETE (PARALLEL MODE)")
+    print("=" * 50)
+    print(f"  Workers: {workers}")
+    print(f"  Lab interactions found: {state['found_interactions']}")
+    print(f"  Time: {elapsed/60:.1f} minutes")
+
+
 def status():
     """Show current status."""
     progress = load_progress()
@@ -471,19 +627,26 @@ def main():
     parser = argparse.ArgumentParser(
         description='Fetch drug-lab interactions from DailyMed FDA labels',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+        epilog=f'''
 Examples:
   python fetch_dailymed.py --status           # Show status
   python fetch_dailymed.py --fetch            # Fetch all priority drugs
+  python fetch_dailymed.py --fetch --workers 4  # Parallel with 4 workers
   python fetch_dailymed.py --fetch --limit 10 # Fetch 10 drugs
   python fetch_dailymed.py --show             # Show stored interactions
   python fetch_dailymed.py --show warfarin    # Show warfarin interactions
+
+Parallel mode:
+  Default workers: {DEFAULT_WORKERS}, Max workers: {MAX_WORKERS}
+  DailyMed is fairly permissive, 4 workers is a good default.
         '''
     )
     
     parser.add_argument('--status', action='store_true', help='Show current status')
     parser.add_argument('--fetch', action='store_true', help='Fetch drug labels')
     parser.add_argument('--limit', type=int, help='Limit number of drugs to process')
+    parser.add_argument('--workers', '-w', type=int, default=1,
+                       help=f'Number of parallel workers (default: 1, max: {MAX_WORKERS})')
     parser.add_argument('--show', nargs='?', const='', help='Show stored interactions (optionally filter by drug)')
     
     args = parser.parse_args()
@@ -491,7 +654,8 @@ Examples:
     if args.status:
         status()
     elif args.fetch:
-        fetch_drug_labels(limit=args.limit)
+        workers = min(max(1, args.workers), MAX_WORKERS)
+        fetch_drug_labels(limit=args.limit, workers=workers)
     elif args.show is not None:
         show_interactions(args.show if args.show else None)
     else:

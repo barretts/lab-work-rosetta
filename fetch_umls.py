@@ -20,6 +20,8 @@ import json
 import argparse
 import logging
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -47,6 +49,10 @@ RXNORM_BASE = "https://rxnav.nlm.nih.gov/REST"
 # Rate limiting
 REQUEST_DELAY = 0.25  # 4 req/sec for UMLS
 BATCH_SIZE = 50
+
+# Parallel processing defaults
+DEFAULT_WORKERS = 4   # UMLS allows ~20 req/sec with API key
+MAX_WORKERS = 8
 
 
 def ensure_api_key():
@@ -264,7 +270,7 @@ def fetch_rxnorm_interactions(drug_name: str) -> dict:
 # Batch Fetchers
 # ============================================================
 
-def fetch_all_loinc_snomed(limit: int = None):
+def fetch_all_loinc_snomed(limit: int = None, workers: int = 1):
     """Fetch SNOMED mappings for all LOINC codes."""
     if not ensure_api_key():
         return
@@ -290,6 +296,12 @@ def fetch_all_loinc_snomed(limit: int = None):
     if not to_process:
         print("All LOINC codes already processed!")
         conn.close()
+        return
+    
+    # Use parallel mode if workers > 1
+    if workers > 1:
+        conn.close()
+        fetch_loinc_snomed_parallel(to_process, progress, workers)
         return
     
     print(f"Fetching SNOMED mappings for {len(to_process)} LOINC codes...")
@@ -345,6 +357,125 @@ def fetch_all_loinc_snomed(limit: int = None):
         conn.close()
     
     print(f"\nComplete: {mapped} mapped, {no_mapping} no mapping")
+
+
+def fetch_loinc_snomed_parallel(to_process: list, progress: dict, workers: int):
+    """Parallel SNOMED fetcher using asyncio with semaphore-controlled concurrency."""
+    workers = min(workers, MAX_WORKERS)
+    logger.info(f"Fetching SNOMED mappings for {len(to_process)} codes with {workers} workers...")
+    
+    effective_rate = workers / REQUEST_DELAY
+    est_minutes = len(to_process) / effective_rate / 60
+    logger.info(f"Estimated time: {est_minutes:.1f} minutes (parallel mode)")
+    
+    # Get TGT (valid for ~8 hours)
+    tgt_url = get_umls_tgt()
+    if not tgt_url:
+        print("Failed to authenticate with UMLS")
+        return
+    
+    state = {
+        'mapped': 0,
+        'no_mapping': 0,
+        'processed': 0,
+        'total': len(to_process),
+        'start_time': time.time(),
+        'progress': progress,
+        'lock': asyncio.Lock(),
+    }
+    
+    async def fetch_single(loinc_code: str, semaphore: asyncio.Semaphore, 
+                          executor: ThreadPoolExecutor):
+        """Fetch a single code with semaphore control."""
+        async with semaphore:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                executor, 
+                fetch_loinc_snomed_mapping, 
+                loinc_code, 
+                tgt_url
+            )
+            await asyncio.sleep(REQUEST_DELAY)
+            return (loinc_code, result)
+    
+    async def process_results(results: list, conn: sqlite3.Connection):
+        """Process batch of results and update DB."""
+        async with state['lock']:
+            for loinc_code, result in results:
+                state['processed'] += 1
+                
+                if result.get('snomed_codes'):
+                    state['mapped'] += 1
+                    for snomed in result['snomed_codes']:
+                        try:
+                            conn.execute('''
+                                INSERT OR IGNORE INTO concept_synonym 
+                                (loinc_code, source, synonym_type, synonym_text)
+                                VALUES (?, ?, ?, ?)
+                            ''', (loinc_code, 'SNOMED_CT', 'snomed_code', snomed['code']))
+                        except:
+                            pass
+                else:
+                    state['no_mapping'] += 1
+                
+                state['progress']['loinc_snomed'].append(loinc_code)
+            
+            conn.commit()
+            save_progress(state['progress'])
+            
+            elapsed = time.time() - state['start_time']
+            rate = state['processed'] / elapsed * 60 if elapsed > 0 else 0
+            remaining = (state['total'] - state['processed']) / rate if rate > 0 else 0
+            logger.info(f"Progress: {state['processed']}/{state['total']} | "
+                       f"✓{state['mapped']} -{state['no_mapping']} | "
+                       f"Rate: {rate:.0f}/min | ETA: {remaining:.1f} min")
+    
+    async def run_all():
+        """Main async entry point."""
+        semaphore = asyncio.Semaphore(workers)
+        conn = sqlite3.connect(str(DB_PATH))
+        
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for batch_start in range(0, len(to_process), BATCH_SIZE):
+                    batch = to_process[batch_start:batch_start + BATCH_SIZE]
+                    
+                    tasks = [
+                        fetch_single(code, semaphore, executor)
+                        for code in batch
+                    ]
+                    
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    valid_results = []
+                    for i, r in enumerate(results):
+                        if isinstance(r, Exception):
+                            logger.warning(f"Exception for {batch[i]}: {r}")
+                        else:
+                            valid_results.append(r)
+                    
+                    await process_results(valid_results, conn)
+                    
+        except KeyboardInterrupt:
+            logger.info("\nInterrupted. Saving progress...")
+        finally:
+            conn.commit()
+            save_progress(state['progress'])
+            conn.close()
+    
+    try:
+        asyncio.run(run_all())
+    except KeyboardInterrupt:
+        pass
+    
+    elapsed = time.time() - state['start_time']
+    print("\n" + "=" * 50)
+    print("SNOMED FETCH COMPLETE (PARALLEL MODE)")
+    print("=" * 50)
+    print(f"  Workers: {workers}")
+    print(f"  Mapped: {state['mapped']}")
+    print(f"  No mapping: {state['no_mapping']}")
+    print(f"  Time: {elapsed/60:.1f} minutes")
 
 
 def fetch_common_drug_interactions():
@@ -436,12 +567,17 @@ def main():
     parser = argparse.ArgumentParser(
         description='Fetch UMLS/RxNorm/SNOMED data for lab tests',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+        epilog=f'''
 Examples:
   python fetch_umls.py --status              # Show status
   python fetch_umls.py --snomed              # Fetch LOINC→SNOMED mappings
+  python fetch_umls.py --snomed --workers 4  # Parallel with 4 workers
   python fetch_umls.py --snomed --limit 100  # Fetch 100 mappings
   python fetch_umls.py --rxnorm              # Fetch drug-lab interactions
+
+Parallel mode:
+  Default workers: {DEFAULT_WORKERS}, Max workers: {MAX_WORKERS}
+  UMLS allows ~20 req/sec with API key, so 4 workers is safe.
         '''
     )
     
@@ -449,13 +585,16 @@ Examples:
     parser.add_argument('--snomed', action='store_true', help='Fetch LOINC to SNOMED CT mappings')
     parser.add_argument('--rxnorm', action='store_true', help='Fetch drug-lab interactions')
     parser.add_argument('--limit', type=int, help='Limit number of codes to process')
+    parser.add_argument('--workers', '-w', type=int, default=1,
+                       help=f'Number of parallel workers (default: 1, max: {MAX_WORKERS})')
     
     args = parser.parse_args()
     
     if args.status:
         status()
     elif args.snomed:
-        fetch_all_loinc_snomed(limit=args.limit)
+        workers = min(max(1, args.workers), MAX_WORKERS)
+        fetch_all_loinc_snomed(limit=args.limit, workers=workers)
     elif args.rxnorm:
         fetch_common_drug_interactions()
     else:
