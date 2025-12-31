@@ -4,14 +4,15 @@ Clinical Rosetta Stone - Data Enrichment Module
 Adds curated mappings, critical values, and API integrations.
 """
 
+import logging
 import sqlite3
+import time
+from functools import lru_cache
+from pathlib import Path
+from typing import Dict, List, Optional
+
 import pandas as pd
 import requests
-import time
-import logging
-from pathlib import Path
-from typing import Optional, Dict, List
-from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,6 @@ CURATED_LIS_MAPPINGS = {
         ("RDW", "788-0", "Red Cell Distribution Width"),
         ("RDW-CV", "788-0", "Red Cell Distribution Width"),
         ("MPV", "32623-1", "Mean Platelet Volume"),
-        
         # Differential
         ("Neut %", "770-8", "Neutrophils %"),
         ("Neutrophils", "770-8", "Neutrophils %"),
@@ -69,7 +69,6 @@ CURATED_LIS_MAPPINGS = {
         ("Baso %", "706-2", "Basophils %"),
         ("Basophils", "706-2", "Basophils %"),
         ("Basos", "706-2", "Basophils %"),
-        
         # Absolute counts
         ("ANC", "751-8", "Absolute Neutrophil Count"),
         ("Neut Abs", "751-8", "Absolute Neutrophil Count"),
@@ -81,7 +80,6 @@ CURATED_LIS_MAPPINGS = {
         ("AEC", "711-2", "Absolute Eosinophil Count"),
         ("Eos Abs", "711-2", "Absolute Eosinophil Count"),
     ],
-    
     "LabCorp_Style": [
         # Basic Metabolic Panel
         ("Glucose", "2345-7", "Glucose, Serum"),
@@ -101,7 +99,6 @@ CURATED_LIS_MAPPINGS = {
         ("HCO3", "2028-9", "Carbon Dioxide, Total"),
         ("Calcium", "17861-6", "Calcium, Serum"),
         ("Ca", "17861-6", "Calcium, Serum"),
-        
         # Comprehensive Metabolic Panel additions
         ("Albumin", "1751-7", "Albumin, Serum"),
         ("Alb", "1751-7", "Albumin, Serum"),
@@ -123,7 +120,6 @@ CURATED_LIS_MAPPINGS = {
         ("GGT", "2324-2", "Gamma Glutamyl Transferase"),
         ("GGTP", "2324-2", "Gamma Glutamyl Transferase"),
     ],
-    
     "Quest_Style": [
         # Lipid Panel
         ("Cholesterol", "2093-3", "Cholesterol, Total"),
@@ -138,7 +134,6 @@ CURATED_LIS_MAPPINGS = {
         ("LDL-C", "13457-7", "LDL Cholesterol, Calculated"),
         ("LDL Calc", "13457-7", "LDL Cholesterol, Calculated"),
         ("VLDL", "13458-5", "VLDL Cholesterol, Calculated"),
-        
         # Thyroid
         ("TSH", "3016-3", "Thyroid Stimulating Hormone"),
         ("T4 Free", "3024-7", "Free T4"),
@@ -147,7 +142,6 @@ CURATED_LIS_MAPPINGS = {
         ("FT3", "3051-0", "Free T3"),
         ("T4 Total", "3026-2", "Total T4"),
         ("T3 Total", "3053-6", "Total T3"),
-        
         # Diabetes
         ("HbA1c", "4548-4", "Hemoglobin A1c"),
         ("A1C", "4548-4", "Hemoglobin A1c"),
@@ -155,7 +149,6 @@ CURATED_LIS_MAPPINGS = {
         ("Fasting Glucose", "1558-6", "Fasting Glucose"),
         ("FBG", "1558-6", "Fasting Glucose"),
     ],
-    
     "Hospital_Common": [
         # Cardiac markers
         ("Troponin I", "10839-9", "Troponin I"),
@@ -168,7 +161,6 @@ CURATED_LIS_MAPPINGS = {
         ("CPK", "2157-6", "Creatine Kinase"),
         ("CK-MB", "13969-1", "Creatine Kinase MB"),
         ("LDH", "2532-0", "Lactate Dehydrogenase"),
-        
         # Coagulation
         ("PT", "5902-2", "Prothrombin Time"),
         ("Pro Time", "5902-2", "Prothrombin Time"),
@@ -177,7 +169,6 @@ CURATED_LIS_MAPPINGS = {
         ("aPTT", "3173-2", "Partial Thromboplastin Time"),
         ("Fibrinogen", "3255-7", "Fibrinogen"),
         ("D-Dimer", "48065-7", "D-Dimer"),
-        
         # Iron studies
         ("Iron", "2498-4", "Iron, Serum"),
         ("Fe", "2498-4", "Iron, Serum"),
@@ -186,7 +177,6 @@ CURATED_LIS_MAPPINGS = {
         ("Transferrin", "3034-6", "Transferrin"),
         ("Iron Sat", "2502-3", "Iron Saturation"),
         ("TSAT", "2502-3", "Iron Saturation"),
-        
         # Inflammatory markers
         ("CRP", "1988-5", "C-Reactive Protein"),
         ("hs-CRP", "30522-7", "High Sensitivity CRP"),
@@ -194,7 +184,6 @@ CURATED_LIS_MAPPINGS = {
         ("Sed Rate", "30341-2", "Erythrocyte Sedimentation Rate"),
         ("Procalcitonin", "75241-0", "Procalcitonin"),
         ("PCT", "75241-0", "Procalcitonin"),
-        
         # Renal
         ("eGFR", "33914-3", "Estimated GFR"),
         ("GFR", "33914-3", "Estimated GFR"),
@@ -205,13 +194,11 @@ CURATED_LIS_MAPPINGS = {
         ("Magnesium", "19123-9", "Magnesium, Serum"),
         ("Mag", "19123-9", "Magnesium, Serum"),
         ("Mg", "19123-9", "Magnesium, Serum"),
-        
         # Liver
         ("Ammonia", "1841-6", "Ammonia"),
         ("NH3", "1841-6", "Ammonia"),
         ("Amylase", "1798-8", "Amylase"),
         ("Lipase", "3040-3", "Lipase"),
-        
         # Electrolytes/ABG
         ("Lactate", "2524-7", "Lactate"),
         ("Lactic Acid", "2524-7", "Lactate"),
@@ -220,7 +207,6 @@ CURATED_LIS_MAPPINGS = {
         ("pO2", "2703-7", "pO2"),
         ("Base Excess", "1925-7", "Base Excess"),
         ("BE", "1925-7", "Base Excess"),
-        
         # Urinalysis
         ("UA Glucose", "25428-4", "Urine Glucose"),
         ("UA Protein", "20454-5", "Urine Protein"),
@@ -230,7 +216,6 @@ CURATED_LIS_MAPPINGS = {
         ("Specific Gravity", "5811-5", "Urine Specific Gravity"),
         ("SG", "5811-5", "Urine Specific Gravity"),
     ],
-    
     "ARUP_Style": [
         # Vitamins and minerals
         ("Vitamin D", "1989-3", "Vitamin D, 25-Hydroxy"),
@@ -240,7 +225,6 @@ CURATED_LIS_MAPPINGS = {
         ("B12", "2132-9", "Vitamin B12"),
         ("Folate", "2284-8", "Folate, Serum"),
         ("Folic Acid", "2284-8", "Folate, Serum"),
-        
         # Hormones
         ("Cortisol AM", "2143-6", "Cortisol, AM"),
         ("Testosterone", "2986-8", "Testosterone, Total"),
@@ -252,7 +236,6 @@ CURATED_LIS_MAPPINGS = {
         ("LH", "10501-5", "LH"),
         ("Prolactin", "2842-3", "Prolactin"),
         ("PRL", "2842-3", "Prolactin"),
-        
         # Tumor markers
         ("PSA", "2857-1", "PSA, Total"),
         ("CEA", "2039-6", "CEA"),
@@ -275,7 +258,6 @@ CRITICAL_VALUES = [
     {"loinc": "777-3", "name": "Platelet Count", "low": 20.0, "high": 1000.0, "unit": "10^3/uL"},
     {"loinc": "6690-2", "name": "WBC", "low": 2.0, "high": 30.0, "unit": "10^3/uL"},
     {"loinc": "751-8", "name": "ANC", "low": 0.5, "high": None, "unit": "10^3/uL"},
-    
     # Chemistry
     {"loinc": "2345-7", "name": "Glucose", "low": 40.0, "high": 500.0, "unit": "mg/dL"},
     {"loinc": "2823-3", "name": "Potassium", "low": 2.5, "high": 6.5, "unit": "mEq/L"},
@@ -286,17 +268,14 @@ CRITICAL_VALUES = [
     {"loinc": "2160-0", "name": "Creatinine", "low": None, "high": 10.0, "unit": "mg/dL"},
     {"loinc": "1975-2", "name": "Bilirubin, Total", "low": None, "high": 15.0, "unit": "mg/dL"},
     {"loinc": "1841-6", "name": "Ammonia", "low": None, "high": 100.0, "unit": "umol/L"},
-    
     # Cardiac
     {"loinc": "10839-9", "name": "Troponin I", "low": None, "high": 0.5, "unit": "ng/mL"},
     {"loinc": "6598-7", "name": "Troponin T", "low": None, "high": 0.1, "unit": "ng/mL"},
     {"loinc": "2524-7", "name": "Lactate", "low": None, "high": 4.0, "unit": "mmol/L"},
-    
     # Coagulation
     {"loinc": "6301-6", "name": "INR", "low": None, "high": 5.0, "unit": "ratio"},
     {"loinc": "3173-2", "name": "PTT", "low": None, "high": 100.0, "unit": "sec"},
     {"loinc": "3255-7", "name": "Fibrinogen", "low": 100.0, "high": None, "unit": "mg/dL"},
-    
     # Blood Gas
     {"loinc": "2744-1", "name": "pH, Blood", "low": 7.2, "high": 7.6, "unit": "pH"},
     {"loinc": "2019-8", "name": "pCO2", "low": 20.0, "high": 70.0, "unit": "mmHg"},
@@ -308,263 +287,307 @@ CRITICAL_VALUES = [
 # ENRICHMENT CLASS
 # ============================================================================
 
+
 class RosettaEnrichment:
     """Enriches the Clinical Rosetta database with curated data."""
-    
+
     def __init__(self, db_path: str = DB_PATH):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
-        
+
     def close(self):
         if self.conn:
             self.conn.close()
-    
+
     def ingest_curated_mappings(self):
         """Ingest all curated LIS mappings."""
         logger.info("Ingesting curated LIS mappings...")
-        
+
         total = 0
         for system_name, mappings in CURATED_LIS_MAPPINGS.items():
             # Create source system
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO source_system (system_name, system_type, vendor)
                 VALUES (?, ?, ?)
-            """, (system_name, 'LIS', 'Curated'))
-            
+            """,
+                (system_name, "LIS", "Curated"),
+            )
+
             cursor = self.conn.execute(
-                "SELECT system_id FROM source_system WHERE system_name = ?",
-                (system_name,)
+                "SELECT system_id FROM source_system WHERE system_name = ?", (system_name,)
             )
             system_id = cursor.fetchone()[0]
-            
+
             for shorthand, loinc, name in mappings:
                 # Ensure LOINC exists
-                self.conn.execute("""
+                self.conn.execute(
+                    """
                     INSERT OR IGNORE INTO loinc_concept (loinc_code, long_common_name)
                     VALUES (?, ?)
-                """, (loinc, name))
-                
+                """,
+                    (loinc, name),
+                )
+
                 # Add mapping
                 try:
-                    self.conn.execute("""
+                    self.conn.execute(
+                        """
                         INSERT OR IGNORE INTO lis_mapping 
                         (source_system_id, source_code, source_description, target_loinc, mapping_source)
                         VALUES (?, ?, ?, ?, ?)
-                    """, (system_id, shorthand, name, loinc, 'curated_standards'))
+                    """,
+                        (system_id, shorthand, name, loinc, "curated_standards"),
+                    )
                     total += 1
                 except Exception as e:
                     logger.error(f"Error inserting {shorthand}: {e}")
-        
+
         self.conn.commit()
         logger.info(f"Ingested {total} curated LIS mappings")
         return total
-    
+
     def ingest_critical_values(self):
         """Ingest critical/panic values."""
         logger.info("Ingesting critical values...")
-        
+
         # Create severity standard
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT OR IGNORE INTO severity_standard 
             (standard_name, version, description)
             VALUES (?, ?, ?)
-        """, ('Critical_Values', '1.0', 'Consensus critical values from CAP/CLSI guidelines'))
-        
+        """,
+            ("Critical_Values", "1.0", "Consensus critical values from CAP/CLSI guidelines"),
+        )
+
         cursor = self.conn.execute(
             "SELECT standard_id FROM severity_standard WHERE standard_name = 'Critical_Values'"
         )
         standard_id = cursor.fetchone()[0]
-        
+
         count = 0
         for cv in CRITICAL_VALUES:
             # Ensure LOINC exists
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT OR IGNORE INTO loinc_concept (loinc_code, long_common_name)
                 VALUES (?, ?)
-            """, (cv['loinc'], cv['name']))
-            
+            """,
+                (cv["loinc"], cv["name"]),
+            )
+
             # Add low critical value
-            if cv.get('low') is not None:
-                self.conn.execute("""
+            if cv.get("low") is not None:
+                self.conn.execute(
+                    """
                     INSERT OR IGNORE INTO severity_rule 
                     (loinc_code, standard_id, direction, threshold_value, threshold_operator,
                      unit_of_measure, severity_level, severity_label, clinical_description)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    cv['loinc'], standard_id, 'LOW', cv['low'], '<',
-                    cv['unit'], 'Critical', 'Critical Low',
-                    f"Critical low {cv['name']}: < {cv['low']} {cv['unit']}"
-                ))
+                """,
+                    (
+                        cv["loinc"],
+                        standard_id,
+                        "LOW",
+                        cv["low"],
+                        "<",
+                        cv["unit"],
+                        "Critical",
+                        "Critical Low",
+                        f"Critical low {cv['name']}: < {cv['low']} {cv['unit']}",
+                    ),
+                )
                 count += 1
-            
+
             # Add high critical value
-            if cv.get('high') is not None:
-                self.conn.execute("""
+            if cv.get("high") is not None:
+                self.conn.execute(
+                    """
                     INSERT OR IGNORE INTO severity_rule 
                     (loinc_code, standard_id, direction, threshold_value, threshold_operator,
                      unit_of_measure, severity_level, severity_label, clinical_description)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    cv['loinc'], standard_id, 'HIGH', cv['high'], '>',
-                    cv['unit'], 'Critical', 'Critical High',
-                    f"Critical high {cv['name']}: > {cv['high']} {cv['unit']}"
-                ))
+                """,
+                    (
+                        cv["loinc"],
+                        standard_id,
+                        "HIGH",
+                        cv["high"],
+                        ">",
+                        cv["unit"],
+                        "Critical",
+                        "Critical High",
+                        f"Critical high {cv['name']}: > {cv['high']} {cv['unit']}",
+                    ),
+                )
                 count += 1
-        
+
         self.conn.commit()
         logger.info(f"Ingested {count} critical value rules")
         return count
-    
+
     def ingest_loinc2hpo(self):
         """Ingest loinc2hpo annotations."""
         logger.info("Ingesting loinc2hpo annotations...")
-        
+
         filepath = DATA_DIR / "loinc2hpo_annotations.tsv"
         if not filepath.exists():
             logger.warning(f"loinc2hpo file not found: {filepath}")
             return 0
-        
-        df = pd.read_csv(filepath, sep='\t')
-        
+
+        df = pd.read_csv(filepath, sep="\t")
+
         # Create source system for HPO mappings
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT OR IGNORE INTO source_system 
             (system_name, system_type, vendor)
             VALUES (?, ?, ?)
-        """, ('HPO_Phenotype', 'Ontology', 'Monarch Initiative'))
-        
+        """,
+            ("HPO_Phenotype", "Ontology", "Monarch Initiative"),
+        )
+
         count = 0
-        unique_loincs = df['loincId'].unique()
-        
+        unique_loincs = df["loincId"].unique()
+
         for loinc in unique_loincs:
             # Add as vocabulary mapping (LOINC -> HPO)
-            subset = df[df['loincId'] == loinc]
-            
+            subset = df[df["loincId"] == loinc]
+
             for _, row in subset.iterrows():
-                hpo_id = row['hpoTermId']
-                outcome = row['outcome']  # H, L, N, POS, NEG
-                
+                hpo_id = row["hpoTermId"]
+                outcome = row["outcome"]  # H, L, N, POS, NEG
+
                 try:
-                    self.conn.execute("""
+                    self.conn.execute(
+                        """
                         INSERT OR IGNORE INTO vocabulary_mapping 
                         (source_vocabulary, source_code, target_vocabulary, target_code, 
                          relationship_type, mapping_source)
                         VALUES (?, ?, ?, ?, ?, ?)
-                    """, (
-                        'LOINC', str(loinc), 'HPO', hpo_id,
-                        f'OUTCOME_{outcome}', 'loinc2hpo'
-                    ))
+                    """,
+                        ("LOINC", str(loinc), "HPO", hpo_id, f"OUTCOME_{outcome}", "loinc2hpo"),
+                    )
                     count += 1
                 except Exception as e:
                     pass
-        
+
         self.conn.commit()
-        logger.info(f"Ingested {count} LOINC-to-HPO mappings ({len(unique_loincs)} unique LOINC codes)")
+        logger.info(
+            f"Ingested {count} LOINC-to-HPO mappings ({len(unique_loincs)} unique LOINC codes)"
+        )
         return count
-    
+
     def fetch_medlineplus_descriptions(self, limit: int = 50):
         """Fetch consumer descriptions from MedlinePlus Connect API."""
         logger.info("Fetching MedlinePlus descriptions...")
-        
+
         # Get LOINC codes that don't have descriptions yet
-        cursor = self.conn.execute("""
+        cursor = self.conn.execute(
+            """
             SELECT loinc_code, long_common_name FROM loinc_concept
             WHERE loinc_code NOT IN (
                 SELECT loinc_code FROM concept_description WHERE source = 'MedlinePlus'
             )
             ORDER BY rank_frequency DESC NULLS LAST
             LIMIT ?
-        """, (limit,))
-        
+        """,
+            (limit,),
+        )
+
         codes = cursor.fetchall()
         logger.info(f"Fetching descriptions for {len(codes)} LOINC codes...")
-        
+
         base_url = "https://connect.medlineplus.gov/service"
         loinc_oid = "2.16.840.1.113883.6.1"
-        
+
         fetched = 0
         for loinc_code, name in codes:
             try:
                 params = {
-                    'mainSearchCriteria.v.cs': loinc_oid,
-                    'mainSearchCriteria.v.c': loinc_code,
-                    'knowledgeResponseType': 'application/json',
+                    "mainSearchCriteria.v.cs": loinc_oid,
+                    "mainSearchCriteria.v.c": loinc_code,
+                    "knowledgeResponseType": "application/json",
                 }
-                
+
                 response = requests.get(base_url, params=params, timeout=30)
-                
+
                 if response.status_code == 200:
                     data = response.json()
-                    feed = data.get('feed', {})
-                    entries = feed.get('entry', [])
-                    
+                    feed = data.get("feed", {})
+                    entries = feed.get("entry", [])
+
                     if entries:
                         entry = entries[0]
-                        title = entry.get('title', {}).get('_value', '')
-                        
+                        title = entry.get("title", {}).get("_value", "")
+
                         # Extract summary
-                        summary_data = entry.get('summary', {})
-                        summary = ''
+                        summary_data = entry.get("summary", {})
+                        summary = ""
                         if isinstance(summary_data, dict):
-                            summary = summary_data.get('_value', '')
+                            summary = summary_data.get("_value", "")
                         elif isinstance(summary_data, list):
                             for s in summary_data:
-                                if isinstance(s, dict) and '_value' in s:
-                                    summary = s.get('_value', '')
+                                if isinstance(s, dict) and "_value" in s:
+                                    summary = s.get("_value", "")
                                     break
-                        
+
                         if summary:
-                            self.conn.execute("""
+                            self.conn.execute(
+                                """
                                 INSERT OR REPLACE INTO concept_description 
                                 (loinc_code, source, language, description_type, description_text, 
                                  source_url, retrieved_date)
                                 VALUES (?, ?, ?, ?, ?, ?, date('now'))
-                            """, (
-                                loinc_code, 'MedlinePlus', 'en', 'consumer',
-                                summary[:2000],  # Truncate if too long
-                                f"https://medlineplus.gov/lab-tests/{title.lower().replace(' ', '-')}/"
-                            ))
+                            """,
+                                (
+                                    loinc_code,
+                                    "MedlinePlus",
+                                    "en",
+                                    "consumer",
+                                    summary[:2000],  # Truncate if too long
+                                    f"https://medlineplus.gov/lab-tests/{title.lower().replace(' ', '-')}/",
+                                ),
+                            )
                             fetched += 1
                             logger.info(f"  ✓ {loinc_code}: {title[:50]}...")
-                
+
                 time.sleep(0.7)  # Rate limit: 100 req/min
-                
+
             except Exception as e:
                 logger.warning(f"  ✗ {loinc_code}: {e}")
-        
+
         self.conn.commit()
         logger.info(f"Fetched {fetched} MedlinePlus descriptions")
         return fetched
-    
+
     def run_all(self):
         """Run all enrichment steps."""
         logger.info("=" * 60)
         logger.info("CLINICAL ROSETTA STONE - DATA ENRICHMENT")
         logger.info("=" * 60)
-        
+
         results = {
-            'curated_mappings': self.ingest_curated_mappings(),
-            'critical_values': self.ingest_critical_values(),
-            'loinc2hpo': self.ingest_loinc2hpo(),
-            'medlineplus': self.fetch_medlineplus_descriptions(limit=30),
+            "curated_mappings": self.ingest_curated_mappings(),
+            "critical_values": self.ingest_critical_values(),
+            "loinc2hpo": self.ingest_loinc2hpo(),
+            "medlineplus": self.fetch_medlineplus_descriptions(limit=30),
         }
-        
+
         # Print summary
         print("\n" + "=" * 50)
         print("ENRICHMENT SUMMARY")
         print("=" * 50)
         for name, count in results.items():
             print(f"  {name}: {count}")
-        
+
         return results
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s"
-    )
-    
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
     enricher = RosettaEnrichment()
     try:
         enricher.run_all()

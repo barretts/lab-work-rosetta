@@ -4,8 +4,8 @@ Clinical Rosetta Stone - Database Schema
 Enhanced schema for linking LIS shorthands to standardized codes.
 """
 
-import sqlite3
 import logging
+import sqlite3
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -331,17 +331,17 @@ JOIN loinc_concept l ON cs.loinc_code = l.loinc_code;
 def init_database(db_path: str = "clinical_rosetta.db") -> sqlite3.Connection:
     """Initialize the database with the schema."""
     logger.info(f"Initializing database: {db_path}")
-    
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    
+
     # Enable foreign keys
     conn.execute("PRAGMA foreign_keys = ON")
-    
+
     # Execute schema
     conn.executescript(SCHEMA_SQL)
     conn.commit()
-    
+
     logger.info("Database schema initialized successfully")
     return conn
 
@@ -349,11 +349,20 @@ def init_database(db_path: str = "clinical_rosetta.db") -> sqlite3.Connection:
 def get_table_counts(conn: sqlite3.Connection) -> dict:
     """Get row counts for all tables."""
     tables = [
-        'loinc_concept', 'source_system', 'lis_mapping', 'vocabulary_mapping',
-        'reference_population', 'reference_distribution', 'concept_description',
-        'concept_synonym', 'nci_concept', 'severity_standard', 'severity_rule', 'ctcae_term'
+        "loinc_concept",
+        "source_system",
+        "lis_mapping",
+        "vocabulary_mapping",
+        "reference_population",
+        "reference_distribution",
+        "concept_description",
+        "concept_synonym",
+        "nci_concept",
+        "severity_standard",
+        "severity_rule",
+        "ctcae_term",
     ]
-    
+
     counts = {}
     for table in tables:
         try:
@@ -361,30 +370,30 @@ def get_table_counts(conn: sqlite3.Connection) -> dict:
             counts[table] = cursor.fetchone()[0]
         except sqlite3.OperationalError:
             counts[table] = 0
-    
+
     return counts
 
 
 def print_schema_summary(conn: sqlite3.Connection):
     """Print a summary of the database schema."""
     counts = get_table_counts(conn)
-    
+
     print("\n" + "=" * 50)
     print("CLINICAL ROSETTA STONE DATABASE")
     print("=" * 50)
-    
+
     layers = {
-        'IDENTITY': ['loinc_concept', 'source_system', 'lis_mapping', 'vocabulary_mapping'],
-        'STATISTICAL': ['reference_population', 'reference_distribution'],
-        'KNOWLEDGE': ['concept_description', 'concept_synonym', 'nci_concept'],
-        'SEVERITY': ['severity_standard', 'severity_rule', 'ctcae_term'],
+        "IDENTITY": ["loinc_concept", "source_system", "lis_mapping", "vocabulary_mapping"],
+        "STATISTICAL": ["reference_population", "reference_distribution"],
+        "KNOWLEDGE": ["concept_description", "concept_synonym", "nci_concept"],
+        "SEVERITY": ["severity_standard", "severity_rule", "ctcae_term"],
     }
-    
+
     for layer, tables in layers.items():
         print(f"\n{layer} LAYER:")
         for table in tables:
             print(f"  {table}: {counts.get(table, 0):,} rows")
-    
+
     total = sum(counts.values())
     print(f"\nTOTAL RECORDS: {total:,}")
 

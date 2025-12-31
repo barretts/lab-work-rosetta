@@ -93,9 +93,7 @@ def register_routes(app: Flask) -> None:
 
                     return jsonify({"status": "ok", "input": query, "result": result})
                 else:
-                    return jsonify(
-                        {"status": "not_found", "input": query, "result": None}
-                    )
+                    return jsonify({"status": "not_found", "input": query, "result": None})
         except Exception as e:
             return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -174,7 +172,9 @@ def register_routes(app: Flask) -> None:
         try:
             with LabTestResolver() as resolver:
                 results = resolver.search(query, limit=limit)
-                return jsonify({"status": "ok", "query": query, "count": len(results), "results": results})
+                return jsonify(
+                    {"status": "ok", "query": query, "count": len(results), "results": results}
+                )
         except Exception as e:
             return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -197,9 +197,7 @@ def register_routes(app: Flask) -> None:
                 if result:
                     return jsonify({"status": "ok", "loinc_code": code, "range": result})
                 else:
-                    return jsonify(
-                        {"status": "not_found", "loinc_code": code, "range": None}
-                    )
+                    return jsonify({"status": "not_found", "loinc_code": code, "range": None})
         except Exception as e:
             return jsonify({"status": "error", "error": str(e)}), 500
 

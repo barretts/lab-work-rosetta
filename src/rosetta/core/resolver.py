@@ -1,9 +1,7 @@
 """Lab test name resolver - translates shorthand names to LOINC codes."""
 
 import re
-import sqlite3
 from difflib import SequenceMatcher
-from typing import Optional
 
 from rosetta.core.database import dict_from_row, get_db_connection
 
@@ -80,7 +78,7 @@ class LabTestResolver:
         "25ohd": "25-hydroxyvitamin d",
     }
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         self.conn = get_db_connection(db_path)
 
     def close(self):
@@ -105,7 +103,7 @@ class LabTestResolver:
         text = re.sub(r"\s*(level|count|test|panel|auto|absolute)\s*$", "", text)
         return text
 
-    def resolve(self, test_name: str, min_confidence: float = 0.5) -> Optional[dict]:
+    def resolve(self, test_name: str, min_confidence: float = 0.5) -> dict | None:
         """
         Resolve a lab test name to a LOINC code.
 
@@ -133,7 +131,7 @@ class LabTestResolver:
 
         return None
 
-    def _exact_synonym_match(self, test_name: str) -> Optional[dict]:
+    def _exact_synonym_match(self, test_name: str) -> dict | None:
         """Check for exact match in concept_synonym table."""
         cursor = self.conn.execute(
             """
@@ -155,7 +153,7 @@ class LabTestResolver:
             }
         return None
 
-    def _exact_name_match(self, normalized: str) -> Optional[dict]:
+    def _exact_name_match(self, normalized: str) -> dict | None:
         """Check for exact match on LOINC long_common_name."""
         cursor = self.conn.execute(
             """
@@ -178,7 +176,7 @@ class LabTestResolver:
             }
         return None
 
-    def _fuzzy_match(self, normalized: str, min_confidence: float) -> Optional[dict]:
+    def _fuzzy_match(self, normalized: str, min_confidence: float) -> dict | None:
         """Fuzzy match against LOINC names and synonyms."""
         # Get candidate names
         cursor = self.conn.execute(
@@ -213,7 +211,7 @@ class LabTestResolver:
 
         return best_match
 
-    def get_loinc_details(self, loinc_code: str) -> Optional[dict]:
+    def get_loinc_details(self, loinc_code: str) -> dict | None:
         """Get full details for a LOINC code."""
         cursor = self.conn.execute(
             """
@@ -274,7 +272,8 @@ class LabTestResolver:
         try:
             crit_cursor = self.conn.execute(
                 """
-                SELECT threshold_value, direction, unit_of_measure as unit, clinical_description as notes
+                SELECT threshold_value, direction, unit_of_measure as unit,
+                       clinical_description as notes
                 FROM severity_rule
                 WHERE loinc_code = ? AND severity_level = 'Critical'
                 """,
@@ -310,8 +309,8 @@ class LabTestResolver:
         return [dict_from_row(row) for row in cursor.fetchall()]
 
     def get_reference_range(
-        self, loinc_code: str, age: Optional[int] = None, sex: Optional[str] = None
-    ) -> Optional[dict]:
+        self, loinc_code: str, age: int | None = None, sex: str | None = None
+    ) -> dict | None:
         """Get reference range for a LOINC code, optionally filtered by age/sex."""
         try:
             query = """
@@ -328,7 +327,10 @@ class LabTestResolver:
                 params.append(sex.upper()[0] if sex else "A")
 
             if age is not None:
-                query += " AND (age_min_years IS NULL OR age_min_years <= ?) AND (age_max_years IS NULL OR age_max_years >= ?)"
+                query += (
+                    " AND (age_min_years IS NULL OR age_min_years <= ?)"
+                    + " AND (age_max_years IS NULL OR age_max_years >= ?)"
+                )
                 params.extend([age, age])
 
             query += " LIMIT 1"
@@ -339,7 +341,7 @@ class LabTestResolver:
         except Exception:
             return None
 
-    def get_critical_values(self, loinc_code: Optional[str] = None) -> list:
+    def get_critical_values(self, loinc_code: str | None = None) -> list:
         """Get critical values, optionally for a specific LOINC code."""
         try:
             if loinc_code:
@@ -370,7 +372,7 @@ class LabTestResolver:
         except Exception:
             return []
 
-    def get_drug_interactions(self, drug_name: Optional[str] = None) -> list:
+    def get_drug_interactions(self, drug_name: str | None = None) -> list:
         """Get drug-lab interactions."""
         if drug_name:
             cursor = self.conn.execute(

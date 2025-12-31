@@ -14,17 +14,18 @@ Sources:
 Note: LOINC Core Table requires manual download from loinc.org (free registration)
 """
 
+import hashlib
+import logging
 import os
 import sys
-import requests
-import zipfile
-import logging
-import hashlib
-from pathlib import Path
-from dataclasses import dataclass
-from typing import Optional, List, Dict, Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+
+import requests
 
 # Project root is two levels up from scripts/setup/
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -35,8 +36,8 @@ DOWNLOADS_DIR = PROJECT_ROOT / "downloads"
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 # Parallel processing defaults
-DEFAULT_WORKERS = 3   # Conservative for downloads
-MAX_WORKERS = 6       # Don't overwhelm servers
+DEFAULT_WORKERS = 3  # Conservative for downloads
+MAX_WORKERS = 6  # Don't overwhelm servers
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DataSource:
     """Represents a downloadable data source."""
+
     name: str
     url: str
     filename: str
@@ -90,7 +92,6 @@ DATA_SOURCES: List[DataSource] = [
         extract_zip=True,
         required=False,
     ),
-    
     # -------------------------------------------------------------------------
     # LAYER 2: STATISTICAL (Reference Ranges from NHANES)
     # -------------------------------------------------------------------------
@@ -157,7 +158,6 @@ DATA_SOURCES: List[DataSource] = [
         layer="statistical",
         required=False,
     ),
-    
     # -------------------------------------------------------------------------
     # LAYER 3: KNOWLEDGE (Human-readable descriptions)
     # -------------------------------------------------------------------------
@@ -170,7 +170,6 @@ DATA_SOURCES: List[DataSource] = [
         extract_zip=True,
         required=False,
     ),
-    
     # -------------------------------------------------------------------------
     # LAYER 4: SEVERITY (Clinical thresholds)
     # -------------------------------------------------------------------------
@@ -196,130 +195,143 @@ DATA_SOURCES: List[DataSource] = [
 # DOWNLOADER CLASS
 # ============================================================================
 
+
 class RosettaDownloader:
     """Downloads and manages data sources for Clinical Rosetta Stone."""
-    
+
     def __init__(self, data_dir: Path = DATA_DIR):
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'ClinicalRosettaStone/1.0 (Research; https://github.com/clinical-rosetta)'
-        })
-        
+        self.session.headers.update(
+            {
+                "User-Agent": "ClinicalRosettaStone/1.0 (Research; https://github.com/clinical-rosetta)"
+            }
+        )
+
     def download_file(self, source: DataSource) -> Dict:
         """
         Download a single data source.
-        
+
         Returns dict with status, path, size, and any errors.
         """
         filepath = self.data_dir / source.filename
         result = {
-            'name': source.name,
-            'layer': source.layer,
-            'filepath': str(filepath),
-            'success': False,
-            'skipped': False,
-            'error': None,
-            'size_bytes': 0,
+            "name": source.name,
+            "layer": source.layer,
+            "filepath": str(filepath),
+            "success": False,
+            "skipped": False,
+            "error": None,
+            "size_bytes": 0,
         }
-        
+
         # Check if already exists
         if filepath.exists():
-            result['success'] = True
-            result['skipped'] = True
-            result['size_bytes'] = filepath.stat().st_size
-            logger.info(f"✓ {source.name} - already exists ({self._format_size(result['size_bytes'])})")
+            result["success"] = True
+            result["skipped"] = True
+            result["size_bytes"] = filepath.stat().st_size
+            logger.info(
+                f"✓ {source.name} - already exists ({self._format_size(result['size_bytes'])})"
+            )
             return result
-        
+
         logger.info(f"⬇ Downloading {source.name}...")
-        
+
         try:
             response = self.session.get(source.url, stream=True, timeout=120)
             response.raise_for_status()
-            
+
             # Get total size if available
-            total_size = int(response.headers.get('content-length', 0))
-            
+            total_size = int(response.headers.get("content-length", 0))
+
             # Download with progress
             downloaded = 0
-            with open(filepath, 'wb') as f:
+            with open(filepath, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
                         if total_size:
                             pct = (downloaded / total_size) * 100
-                            print(f"\r  Progress: {pct:.1f}% ({self._format_size(downloaded)})", end='', flush=True)
-            
+                            print(
+                                f"\r  Progress: {pct:.1f}% ({self._format_size(downloaded)})",
+                                end="",
+                                flush=True,
+                            )
+
             print()  # Newline after progress
-            
-            result['success'] = True
-            result['size_bytes'] = filepath.stat().st_size
-            
+
+            result["success"] = True
+            result["size_bytes"] = filepath.stat().st_size
+
             # Extract if ZIP
-            if source.extract_zip and filepath.suffix.lower() == '.zip':
+            if source.extract_zip and filepath.suffix.lower() == ".zip":
                 self._extract_zip(filepath, source.name)
-            
+
             logger.info(f"✓ {source.name} - downloaded ({self._format_size(result['size_bytes'])})")
-            
+
         except requests.exceptions.HTTPError as e:
-            result['error'] = f"HTTP {e.response.status_code}: {e.response.reason}"
+            result["error"] = f"HTTP {e.response.status_code}: {e.response.reason}"
             if source.required:
                 logger.error(f"✗ {source.name} - {result['error']}")
             else:
                 logger.warning(f"⚠ {source.name} - {result['error']} (optional)")
-                
+
         except requests.exceptions.RequestException as e:
-            result['error'] = str(e)
+            result["error"] = str(e)
             if source.required:
                 logger.error(f"✗ {source.name} - {result['error']}")
             else:
                 logger.warning(f"⚠ {source.name} - {result['error']} (optional)")
-                
+
         except Exception as e:
-            result['error'] = str(e)
+            result["error"] = str(e)
             logger.error(f"✗ {source.name} - Unexpected error: {result['error']}")
-            
+
         return result
-    
+
     def _extract_zip(self, filepath: Path, source_name: str):
         """Extract ZIP file to data directory."""
         extract_dir = self.data_dir / filepath.stem
-        
+
         try:
-            with zipfile.ZipFile(filepath, 'r') as zf:
+            with zipfile.ZipFile(filepath, "r") as zf:
                 zf.extractall(extract_dir)
             logger.info(f"  → Extracted to {extract_dir}")
         except zipfile.BadZipFile:
             logger.warning(f"  → Could not extract {filepath.name} (not a valid ZIP)")
-    
-    def download_all(self, layers: Optional[List[str]] = None, parallel: bool = False, 
-                     workers: int = DEFAULT_WORKERS) -> List[Dict]:
+
+    def download_all(
+        self,
+        layers: Optional[List[str]] = None,
+        parallel: bool = False,
+        workers: int = DEFAULT_WORKERS,
+    ) -> List[Dict]:
         """
         Download all data sources.
-        
+
         Args:
             layers: Optional filter for specific layers (identity, statistical, knowledge, severity)
             parallel: Use parallel downloads (be careful with rate limits)
             workers: Number of parallel workers (default: 3, max: 6)
-            
+
         Returns:
             List of result dictionaries
         """
         sources = DATA_SOURCES
         if layers:
             sources = [s for s in sources if s.layer in layers]
-        
+
         logger.info(f"Starting download of {len(sources)} data sources...")
         logger.info(f"Data directory: {self.data_dir.absolute()}")
         if parallel:
             workers = min(max(1, workers), MAX_WORKERS)
             logger.info(f"Parallel mode: {workers} workers")
         print("-" * 60)
-        
+
         results = []
-        
+
         if parallel:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {executor.submit(self.download_file, src): src for src in sources}
@@ -329,51 +341,52 @@ class RosettaDownloader:
             for source in sources:
                 results.append(self.download_file(source))
                 time.sleep(0.5)  # Be nice to servers
-        
+
         return results
-    
+
     def print_summary(self, results: List[Dict]):
         """Print download summary."""
         print("\n" + "=" * 60)
         print("DOWNLOAD SUMMARY")
         print("=" * 60)
-        
+
         by_layer = {}
         for r in results:
-            layer = r['layer']
+            layer = r["layer"]
             if layer not in by_layer:
-                by_layer[layer] = {'success': 0, 'failed': 0, 'skipped': 0, 'size': 0}
-            
-            if r['success']:
-                by_layer[layer]['success'] += 1
-                by_layer[layer]['size'] += r['size_bytes']
-                if r['skipped']:
-                    by_layer[layer]['skipped'] += 1
+                by_layer[layer] = {"success": 0, "failed": 0, "skipped": 0, "size": 0}
+
+            if r["success"]:
+                by_layer[layer]["success"] += 1
+                by_layer[layer]["size"] += r["size_bytes"]
+                if r["skipped"]:
+                    by_layer[layer]["skipped"] += 1
             else:
-                by_layer[layer]['failed'] += 1
-        
-        total_size = sum(r['size_bytes'] for r in results if r['success'])
-        
+                by_layer[layer]["failed"] += 1
+
+        total_size = sum(r["size_bytes"] for r in results if r["success"])
+
         for layer, stats in sorted(by_layer.items()):
             print(f"\n{layer.upper()} LAYER:")
             print(f"  ✓ Downloaded: {stats['success']} ({stats['skipped']} cached)")
             print(f"  ✗ Failed: {stats['failed']}")
             print(f"  Size: {self._format_size(stats['size'])}")
-        
+
         print(f"\nTOTAL SIZE: {self._format_size(total_size)}")
-        
+
         # List any failures
-        failures = [r for r in results if not r['success']]
+        failures = [r for r in results if not r["success"]]
         if failures:
             print("\n⚠ FAILED DOWNLOADS:")
             for r in failures:
                 print(f"  - {r['name']}: {r['error']}")
-        
+
         # Remind about manual downloads
         print("\n" + "-" * 60)
         print("MANUAL DOWNLOADS REQUIRED:")
         print("-" * 60)
-        print("""
+        print(
+            """
 1. LOINC Core Table (Free registration required)
    → https://loinc.org/downloads/
    → Download: "LOINC Table Core" (LoincTableCore.zip)
@@ -387,17 +400,18 @@ class RosettaDownloader:
    → https://www.aruplab.com/testing
    → Export test catalog
    → Place in: ./raw_data/
-""")
-    
+"""
+        )
+
     @staticmethod
     def _format_size(size_bytes: int) -> str:
         """Format bytes as human-readable string."""
-        for unit in ['B', 'KB', 'MB', 'GB']:
+        for unit in ["B", "KB", "MB", "GB"]:
             if size_bytes < 1024:
                 return f"{size_bytes:.1f} {unit}"
             size_bytes /= 1024
         return f"{size_bytes:.1f} TB"
-    
+
     def verify_downloads(self) -> Dict[str, bool]:
         """Verify all expected files exist."""
         status = {}
@@ -405,12 +419,12 @@ class RosettaDownloader:
             filepath = self.data_dir / source.filename
             exists = filepath.exists()
             status[source.name] = exists
-            
+
             # Check for extracted content if ZIP
             if source.extract_zip and exists:
                 extract_dir = self.data_dir / filepath.stem
                 status[f"{source.name} (extracted)"] = extract_dir.exists()
-        
+
         return status
 
 
@@ -418,23 +432,32 @@ class RosettaDownloader:
 # MAIN EXECUTION
 # ============================================================================
 
+
 def main():
     """Run the downloader."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Download Clinical Rosetta Stone data sources")
-    parser.add_argument('--layer', choices=['identity', 'statistical', 'knowledge', 'severity'],
-                        help='Download only specific layer')
-    parser.add_argument('--verify', action='store_true', help='Verify existing downloads')
-    parser.add_argument('--parallel', action='store_true', help='Use parallel downloads')
-    parser.add_argument('--workers', '-w', type=int, default=DEFAULT_WORKERS,
-                       help=f'Number of parallel workers (default: {DEFAULT_WORKERS}, max: {MAX_WORKERS})')
-    parser.add_argument('--data-dir', type=Path, default=DATA_DIR, help='Data directory')
-    
+    parser.add_argument(
+        "--layer",
+        choices=["identity", "statistical", "knowledge", "severity"],
+        help="Download only specific layer",
+    )
+    parser.add_argument("--verify", action="store_true", help="Verify existing downloads")
+    parser.add_argument("--parallel", action="store_true", help="Use parallel downloads")
+    parser.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"Number of parallel workers (default: {DEFAULT_WORKERS}, max: {MAX_WORKERS})",
+    )
+    parser.add_argument("--data-dir", type=Path, default=DATA_DIR, help="Data directory")
+
     args = parser.parse_args()
-    
+
     downloader = RosettaDownloader(args.data_dir)
-    
+
     if args.verify:
         print("Verifying downloads...")
         status = downloader.verify_downloads()
@@ -442,7 +465,7 @@ def main():
             symbol = "✓" if exists else "✗"
             print(f"  {symbol} {name}")
         return
-    
+
     layers = [args.layer] if args.layer else None
     workers = min(max(1, args.workers), MAX_WORKERS)
     results = downloader.download_all(layers=layers, parallel=args.parallel, workers=workers)

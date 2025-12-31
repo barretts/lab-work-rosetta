@@ -3,7 +3,6 @@
 import os
 import sqlite3
 from pathlib import Path
-from typing import Optional
 
 
 def get_db_path() -> Path:
@@ -17,7 +16,7 @@ def get_db_path() -> Path:
     return project_root / "clinical_rosetta.db"
 
 
-def get_db_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
+def get_db_connection(db_path: Path | None = None) -> sqlite3.Connection:
     """Get a database connection with row factory."""
     if db_path is None:
         db_path = get_db_path()
@@ -29,4 +28,4 @@ def get_db_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
 def dict_from_row(row: sqlite3.Row) -> dict:
     """Convert sqlite3.Row to dictionary."""
-    return dict(zip(row.keys(), row))
+    return dict(zip(row.keys(), row, strict=True))

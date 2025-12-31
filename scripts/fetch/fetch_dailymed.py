@@ -6,7 +6,7 @@ Fetches FDA drug labels to extract drug-lab test interactions.
 API: https://dailymed.nlm.nih.gov/dailymed/app-support-web-services.cfm
 
 Drug labels contain sections like:
-- "7 DRUG INTERACTIONS" 
+- "7 DRUG INTERACTIONS"
 - "7.2 Drug/Laboratory Test Interactions"
 
 Features:
@@ -15,24 +15,22 @@ Features:
 - Extracts lab-relevant sections from labels
 """
 
-import sqlite3
-import requests
-import time
-import json
 import argparse
+import asyncio
+import json
 import logging
 import re
-import asyncio
+import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
-from lxml import etree
-from pathlib import Path
 from datetime import datetime
 from html import unescape
+from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+import requests
+from lxml import etree
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Project root is two levels up from scripts/fetch/
@@ -49,74 +47,120 @@ REQUEST_DELAY = 0.3
 BATCH_SIZE = 50
 
 # Parallel processing defaults
-DEFAULT_WORKERS = 4   # DailyMed is fairly permissive
+DEFAULT_WORKERS = 4  # DailyMed is fairly permissive
 MAX_WORKERS = 8
 
 # Common drugs that affect lab tests
 PRIORITY_DRUGS = [
     # Affects glucose
-    "metformin", "insulin", "glipizide", "glyburide", "prednisone", 
-    "dexamethasone", "hydrocortisone",
+    "metformin",
+    "insulin",
+    "glipizide",
+    "glyburide",
+    "prednisone",
+    "dexamethasone",
+    "hydrocortisone",
     # Affects liver enzymes (AST, ALT, ALP)
-    "acetaminophen", "atorvastatin", "simvastatin", "rosuvastatin",
-    "amiodarone", "methotrexate", "isoniazid",
+    "acetaminophen",
+    "atorvastatin",
+    "simvastatin",
+    "rosuvastatin",
+    "amiodarone",
+    "methotrexate",
+    "isoniazid",
     # Affects kidney function (BUN, creatinine, eGFR)
-    "ibuprofen", "naproxen", "celecoxib", "lisinopril", "losartan",
-    "metformin", "vancomycin", "gentamicin",
+    "ibuprofen",
+    "naproxen",
+    "celecoxib",
+    "lisinopril",
+    "losartan",
+    "metformin",
+    "vancomycin",
+    "gentamicin",
     # Affects thyroid tests (TSH, T3, T4)
-    "levothyroxine", "methimazole", "propylthiouracil", "amiodarone", 
-    "lithium", "biotin",
+    "levothyroxine",
+    "methimazole",
+    "propylthiouracil",
+    "amiodarone",
+    "lithium",
+    "biotin",
     # Affects coagulation (PT, INR, PTT)
-    "warfarin", "heparin", "enoxaparin", "rivaroxaban", "apixaban",
-    "aspirin", "clopidogrel",
+    "warfarin",
+    "heparin",
+    "enoxaparin",
+    "rivaroxaban",
+    "apixaban",
+    "aspirin",
+    "clopidogrel",
     # Affects electrolytes (Na, K, Ca, Mg)
-    "furosemide", "hydrochlorothiazide", "spironolactone", "lisinopril",
+    "furosemide",
+    "hydrochlorothiazide",
+    "spironolactone",
+    "lisinopril",
     "amlodipine",
     # Affects lipid panel
-    "atorvastatin", "simvastatin", "fenofibrate", "niacin", "ezetimibe",
+    "atorvastatin",
+    "simvastatin",
+    "fenofibrate",
+    "niacin",
+    "ezetimibe",
     # Affects CBC
-    "methotrexate", "azathioprine", "chemotherapy",
+    "methotrexate",
+    "azathioprine",
+    "chemotherapy",
     # Affects PSA
-    "finasteride", "dutasteride",
+    "finasteride",
+    "dutasteride",
     # Affects urine tests
-    "rifampin", "phenazopyridine", "nitrofurantoin",
+    "rifampin",
+    "phenazopyridine",
+    "nitrofurantoin",
     # Common meds
-    "omeprazole", "pantoprazole", "metoprolol", "amlodipine",
-    "gabapentin", "pregabalin", "sertraline", "fluoxetine",
-    "amoxicillin", "azithromycin", "ciprofloxacin", "doxycycline"
+    "omeprazole",
+    "pantoprazole",
+    "metoprolol",
+    "amlodipine",
+    "gabapentin",
+    "pregabalin",
+    "sertraline",
+    "fluoxetine",
+    "amoxicillin",
+    "azithromycin",
+    "ciprofloxacin",
+    "doxycycline",
 ]
 
 
 def load_progress() -> dict:
     if PROGRESS_FILE.exists():
-        with open(PROGRESS_FILE, 'r') as f:
+        with open(PROGRESS_FILE, "r") as f:
             return json.load(f)
-    return {'drugs_processed': [], 'setids_fetched': [], 'last_run': None}
+    return {"drugs_processed": [], "setids_fetched": [], "last_run": None}
 
 
 def save_progress(progress: dict):
-    progress['last_run'] = datetime.now().isoformat()
-    with open(PROGRESS_FILE, 'w') as f:
+    progress["last_run"] = datetime.now().isoformat()
+    with open(PROGRESS_FILE, "w") as f:
         json.dump(progress, f, indent=2)
 
 
 def cache_path(category: str, name: str) -> Path:
     subdir = CACHE_DIR / category
     subdir.mkdir(parents=True, exist_ok=True)
-    safe_name = re.sub(r'[^\w\-]', '_', name.lower())
+    safe_name = re.sub(r"[^\w\-]", "_", name.lower())
     return subdir / f"{safe_name}.json"
 
 
 def save_to_cache(category: str, name: str, data: dict):
     path = cache_path(category, name)
-    with open(path, 'w') as f:
+    with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 
 def load_from_cache(category: str, name: str) -> dict:
     path = cache_path(category, name)
     if path.exists():
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             return json.load(f)
     return None
 
@@ -125,22 +169,22 @@ def search_drug(drug_name: str) -> list:
     """Search for a drug and get its SPL setids."""
     cached = load_from_cache("search", drug_name)
     if cached:
-        return cached.get('results', [])
-    
+        return cached.get("results", [])
+
     url = f"{BASE_URL}/spls.json"
-    params = {'drug_name': drug_name, 'pagesize': 10}
-    
+    params = {"drug_name": drug_name, "pagesize": 10}
+
     try:
         response = requests.get(url, params=params, timeout=30)
         if response.status_code != 200:
             return []
-        
+
         data = response.json()
-        results = data.get('data', [])
-        
-        save_to_cache("search", drug_name, {'drug_name': drug_name, 'results': results})
+        results = data.get("data", [])
+
+        save_to_cache("search", drug_name, {"drug_name": drug_name, "results": results})
         return results
-        
+
     except Exception as e:
         logger.error(f"Error searching {drug_name}: {e}")
         return []
@@ -151,161 +195,190 @@ def fetch_label(setid: str) -> dict:
     cached = load_from_cache("labels", setid)
     if cached:
         return cached
-    
+
     # DailyMed returns XML for full labels
     url = f"{BASE_URL}/spls/{setid}.xml"
-    
+
     try:
         response = requests.get(url, timeout=60)
         if response.status_code != 200:
-            return {'error': f'HTTP {response.status_code}'}
-        
+            return {"error": f"HTTP {response.status_code}"}
+
         # Parse XML and extract sections
         data = parse_spl_xml(response.text, setid)
         save_to_cache("labels", setid, data)
         return data
-        
+
     except Exception as e:
         logger.error(f"Error fetching label {setid}: {e}")
-        return {'error': str(e)}
+        return {"error": str(e)}
 
 
 def parse_spl_xml(xml_text: str, setid: str) -> dict:
     """Parse SPL XML using lxml and extract relevant sections."""
-    result = {
-        'setid': setid,
-        'title': '',
-        'sections': []
-    }
-    
+    result = {"setid": setid, "title": "", "sections": []}
+
     try:
         # Parse with lxml (handles namespaces automatically)
-        root = etree.fromstring(xml_text.encode('utf-8'))
-        
+        root = etree.fromstring(xml_text.encode("utf-8"))
+
         # Define namespace
-        ns = {'hl7': 'urn:hl7-org:v3'}
-        
+        ns = {"hl7": "urn:hl7-org:v3"}
+
         # Get main title
-        title_elem = root.find('.//hl7:title', ns)
+        title_elem = root.find(".//hl7:title", ns)
         if title_elem is not None:
-            result['title'] = ''.join(title_elem.itertext()).strip()[:200]
-        
+            result["title"] = "".join(title_elem.itertext()).strip()[:200]
+
         # Find all sections
-        for section in root.findall('.//hl7:section', ns):
+        for section in root.findall(".//hl7:section", ns):
             # Get section name from code displayName
-            code_elem = section.find('hl7:code', ns)
-            section_name = ''
+            code_elem = section.find("hl7:code", ns)
+            section_name = ""
             if code_elem is not None:
-                section_name = code_elem.get('displayName', '')
-            
+                section_name = code_elem.get("displayName", "")
+
             # Also check title element
-            title_elem = section.find('hl7:title', ns)
+            title_elem = section.find("hl7:title", ns)
             if title_elem is not None:
-                title_text = ''.join(title_elem.itertext()).strip()
+                title_text = "".join(title_elem.itertext()).strip()
                 if title_text:
                     section_name = title_text
-            
+
             # Get section text content
-            text_elem = section.find('hl7:text', ns)
-            section_text = ''
+            text_elem = section.find("hl7:text", ns)
+            section_text = ""
             if text_elem is not None:
-                section_text = ''.join(text_elem.itertext()).strip()
-            
+                section_text = "".join(text_elem.itertext()).strip()
+
             if section_name and section_text:
-                result['sections'].append({
-                    'name': section_name,
-                    'text': section_text[:5000]
-                })
-        
+                result["sections"].append({"name": section_name, "text": section_text[:5000]})
+
     except etree.XMLSyntaxError as e:
         logger.debug(f"XML syntax error: {e}")
     except Exception as e:
         logger.debug(f"Error parsing SPL: {e}")
-    
+
     return result
 
 
 def extract_lab_interactions(label_data: dict) -> dict:
     """Extract lab test interaction info from label."""
     result = {
-        'drug_name': '',
-        'setid': '',
-        'lab_interactions': [],
-        'drug_interactions_text': '',
-        'warnings_text': ''
+        "drug_name": "",
+        "setid": "",
+        "lab_interactions": [],
+        "drug_interactions_text": "",
+        "warnings_text": "",
     }
-    
-    if not label_data or 'error' in label_data:
+
+    if not label_data or "error" in label_data:
         return result
-    
-    result['setid'] = label_data.get('setid', '')
-    result['drug_name'] = label_data.get('title', '')[:100]
-    
-    sections = label_data.get('sections', [])
-    
+
+    result["setid"] = label_data.get("setid", "")
+    result["drug_name"] = label_data.get("title", "")[:100]
+
+    sections = label_data.get("sections", [])
+
     # Parse sections - look for drug interactions and lab test mentions
-    
+
     lab_keywords = [
-        'laboratory', 'lab test', 'test result', 'false positive', 'false negative',
-        'interference', 'glucose', 'creatinine', 'liver function', 'thyroid',
-        'coagulation', 'INR', 'PT', 'PTT', 'electrolyte', 'potassium', 'sodium',
-        'calcium', 'magnesium', 'lipid', 'cholesterol', 'triglyceride',
-        'hemoglobin', 'hematocrit', 'platelet', 'white blood cell', 'WBC',
-        'ALT', 'AST', 'bilirubin', 'alkaline phosphatase', 'GGT',
-        'BUN', 'GFR', 'urine', 'urinalysis', 'blood glucose', 'HbA1c',
-        'TSH', 'T3', 'T4', 'PSA', 'biotin'
+        "laboratory",
+        "lab test",
+        "test result",
+        "false positive",
+        "false negative",
+        "interference",
+        "glucose",
+        "creatinine",
+        "liver function",
+        "thyroid",
+        "coagulation",
+        "INR",
+        "PT",
+        "PTT",
+        "electrolyte",
+        "potassium",
+        "sodium",
+        "calcium",
+        "magnesium",
+        "lipid",
+        "cholesterol",
+        "triglyceride",
+        "hemoglobin",
+        "hematocrit",
+        "platelet",
+        "white blood cell",
+        "WBC",
+        "ALT",
+        "AST",
+        "bilirubin",
+        "alkaline phosphatase",
+        "GGT",
+        "BUN",
+        "GFR",
+        "urine",
+        "urinalysis",
+        "blood glucose",
+        "HbA1c",
+        "TSH",
+        "T3",
+        "T4",
+        "PSA",
+        "biotin",
     ]
-    
+
     for section in sections:
-        name = section.get('name', '').lower()
-        text = section.get('text', '')
-        
+        name = section.get("name", "").lower()
+        text = section.get("text", "")
+
         # Clean HTML
-        clean_text = re.sub(r'<[^>]+>', ' ', text)
+        clean_text = re.sub(r"<[^>]+>", " ", text)
         clean_text = unescape(clean_text)
-        clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-        
+        clean_text = re.sub(r"\s+", " ", clean_text).strip()
+
         # Check for lab-related sections
-        if 'drug interaction' in name or 'interaction' in name:
-            result['drug_interactions_text'] = clean_text[:2000]
-            
+        if "drug interaction" in name or "interaction" in name:
+            result["drug_interactions_text"] = clean_text[:2000]
+
             # Look for lab test mentions
             for keyword in lab_keywords:
                 if keyword.lower() in clean_text.lower():
                     # Extract sentence containing keyword
-                    sentences = re.split(r'[.!?]', clean_text)
+                    sentences = re.split(r"[.!?]", clean_text)
                     for sent in sentences:
                         if keyword.lower() in sent.lower() and len(sent) > 20:
-                            result['lab_interactions'].append({
-                                'keyword': keyword,
-                                'text': sent.strip()[:500]
-                            })
+                            result["lab_interactions"].append(
+                                {"keyword": keyword, "text": sent.strip()[:500]}
+                            )
                             break
-        
-        if 'warning' in name or 'precaution' in name:
+
+        if "warning" in name or "precaution" in name:
             # Also check warnings for lab mentions
             for keyword in lab_keywords:
                 if keyword.lower() in clean_text.lower():
-                    sentences = re.split(r'[.!?]', clean_text)
+                    sentences = re.split(r"[.!?]", clean_text)
                     for sent in sentences:
                         if keyword.lower() in sent.lower() and len(sent) > 20:
-                            result['lab_interactions'].append({
-                                'keyword': keyword,
-                                'text': sent.strip()[:500],
-                                'source': 'warnings'
-                            })
+                            result["lab_interactions"].append(
+                                {
+                                    "keyword": keyword,
+                                    "text": sent.strip()[:500],
+                                    "source": "warnings",
+                                }
+                            )
                             break
-    
+
     # Deduplicate
     seen = set()
     unique = []
-    for item in result['lab_interactions']:
-        key = item['text'][:100]
+    for item in result["lab_interactions"]:
+        key = item["text"][:100]
         if key not in seen:
             seen.add(key)
             unique.append(item)
-    result['lab_interactions'] = unique
-    
+    result["lab_interactions"] = unique
+
     return result
 
 
@@ -313,32 +386,33 @@ def fetch_drug_labels(drugs: list = None, limit: int = None, workers: int = 1):
     """Fetch and process drug labels for lab interactions."""
     if drugs is None:
         drugs = PRIORITY_DRUGS
-    
+
     # Remove duplicates
     drugs = list(dict.fromkeys(drugs))
-    
+
     if limit:
         drugs = drugs[:limit]
-    
+
     progress = load_progress()
-    done = set(progress.get('drugs_processed', []))
+    done = set(progress.get("drugs_processed", []))
     to_process = [d for d in drugs if d.lower() not in done]
-    
+
     if not to_process:
         print("All drugs already processed!")
         return
-    
+
     # Use parallel mode if workers > 1
     if workers > 1:
         fetch_drug_labels_parallel(to_process, progress, workers)
         return
-    
+
     print(f"Fetching DailyMed labels for {len(to_process)} drugs...")
-    
+
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
-    
+
     # Ensure table exists
-    conn.execute('''
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS drug_lab_interaction (
             id INTEGER PRIMARY KEY,
             drug_name TEXT NOT NULL,
@@ -348,90 +422,91 @@ def fetch_drug_labels(drugs: list = None, limit: int = None, workers: int = 1):
             source TEXT DEFAULT 'DailyMed',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    ''')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_drug_lab_drug ON drug_lab_interaction(drug_name)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_drug_lab_keyword ON drug_lab_interaction(keyword)')
-    
+    """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_drug_lab_drug ON drug_lab_interaction(drug_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_drug_lab_keyword ON drug_lab_interaction(keyword)")
+
     found_interactions = 0
-    
+
     try:
         for i, drug in enumerate(to_process):
             # Search for drug
             results = search_drug(drug)
             time.sleep(REQUEST_DELAY)
-            
+
             if not results:
                 logger.info(f"[{i+1}/{len(to_process)}] - {drug}: not found")
-                progress['drugs_processed'].append(drug.lower())
+                progress["drugs_processed"].append(drug.lower())
                 continue
-            
+
             # Get first label
-            setid = results[0].get('setid')
+            setid = results[0].get("setid")
             if not setid:
                 continue
-            
+
             # Fetch full label
             label = fetch_label(setid)
             time.sleep(REQUEST_DELAY)
-            
+
             # Extract lab interactions
             extracted = extract_lab_interactions(label)
-            
-            if extracted['lab_interactions']:
-                found_interactions += len(extracted['lab_interactions'])
-                
+
+            if extracted["lab_interactions"]:
+                found_interactions += len(extracted["lab_interactions"])
+
                 # Store in DB
-                for interaction in extracted['lab_interactions']:
-                    conn.execute('''
+                for interaction in extracted["lab_interactions"]:
+                    conn.execute(
+                        """
                         INSERT INTO drug_lab_interaction 
                         (drug_name, setid, keyword, interaction_text)
                         VALUES (?, ?, ?, ?)
-                    ''', (
-                        drug,
-                        setid,
-                        interaction.get('keyword', ''),
-                        interaction.get('text', '')
-                    ))
-                
-                logger.info(f"[{i+1}/{len(to_process)}] ✓ {drug}: {len(extracted['lab_interactions'])} lab interactions")
+                    """,
+                        (drug, setid, interaction.get("keyword", ""), interaction.get("text", "")),
+                    )
+
+                logger.info(
+                    f"[{i+1}/{len(to_process)}] ✓ {drug}: {len(extracted['lab_interactions'])} lab interactions"
+                )
             else:
                 logger.info(f"[{i+1}/{len(to_process)}] - {drug}: no lab interactions found")
-            
-            progress['drugs_processed'].append(drug.lower())
-            
+
+            progress["drugs_processed"].append(drug.lower())
+
             if i % BATCH_SIZE == 0:
                 conn.commit()
                 save_progress(progress)
-                
+
     except KeyboardInterrupt:
         print("\nInterrupted. Saving progress...")
     finally:
         conn.commit()
         save_progress(progress)
         conn.close()
-    
+
     print(f"\nComplete: {found_interactions} lab interactions found")
 
 
 def fetch_single_drug(drug: str) -> dict:
     """Fetch a single drug's label and extract interactions (for parallel use)."""
     results = search_drug(drug)
-    
+
     if not results:
-        return {'drug': drug, 'found': False, 'interactions': []}
-    
-    setid = results[0].get('setid')
+        return {"drug": drug, "found": False, "interactions": []}
+
+    setid = results[0].get("setid")
     if not setid:
-        return {'drug': drug, 'found': False, 'interactions': []}
-    
+        return {"drug": drug, "found": False, "interactions": []}
+
     label = fetch_label(setid)
     extracted = extract_lab_interactions(label)
-    
+
     return {
-        'drug': drug,
-        'found': True,
-        'setid': setid,
-        'interactions': extracted.get('lab_interactions', [])
+        "drug": drug,
+        "found": True,
+        "setid": setid,
+        "interactions": extracted.get("lab_interactions", []),
     }
 
 
@@ -439,70 +514,75 @@ def fetch_drug_labels_parallel(to_process: list, progress: dict, workers: int):
     """Parallel drug label fetcher using asyncio with semaphore-controlled concurrency."""
     workers = min(workers, MAX_WORKERS)
     logger.info(f"Fetching DailyMed labels for {len(to_process)} drugs with {workers} workers...")
-    
+
     effective_rate = workers / (REQUEST_DELAY * 2)  # 2 requests per drug (search + label)
     est_minutes = len(to_process) / effective_rate / 60
     logger.info(f"Estimated time: {est_minutes:.1f} minutes (parallel mode)")
-    
+
     state = {
-        'found_interactions': 0,
-        'processed': 0,
-        'total': len(to_process),
-        'start_time': time.time(),
-        'progress': progress,
-        'lock': asyncio.Lock(),
+        "found_interactions": 0,
+        "processed": 0,
+        "total": len(to_process),
+        "start_time": time.time(),
+        "progress": progress,
+        "lock": asyncio.Lock(),
     }
-    
-    async def fetch_single(drug: str, semaphore: asyncio.Semaphore, 
-                          executor: ThreadPoolExecutor):
+
+    async def fetch_single(drug: str, semaphore: asyncio.Semaphore, executor: ThreadPoolExecutor):
         """Fetch a single drug with semaphore control."""
         async with semaphore:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(executor, fetch_single_drug, drug)
             await asyncio.sleep(REQUEST_DELAY)
             return result
-    
+
     async def process_results(results: list, conn: sqlite3.Connection):
         """Process batch of results and update DB."""
-        async with state['lock']:
+        async with state["lock"]:
             for result in results:
-                state['processed'] += 1
-                drug = result['drug']
-                
-                if result.get('interactions'):
-                    state['found_interactions'] += len(result['interactions'])
-                    
-                    for interaction in result['interactions']:
-                        conn.execute('''
+                state["processed"] += 1
+                drug = result["drug"]
+
+                if result.get("interactions"):
+                    state["found_interactions"] += len(result["interactions"])
+
+                    for interaction in result["interactions"]:
+                        conn.execute(
+                            """
                             INSERT INTO drug_lab_interaction 
                             (drug_name, setid, keyword, interaction_text)
                             VALUES (?, ?, ?, ?)
-                        ''', (
-                            drug,
-                            result.get('setid', ''),
-                            interaction.get('keyword', ''),
-                            interaction.get('text', '')
-                        ))
-                
-                state['progress']['drugs_processed'].append(drug.lower())
-            
+                        """,
+                            (
+                                drug,
+                                result.get("setid", ""),
+                                interaction.get("keyword", ""),
+                                interaction.get("text", ""),
+                            ),
+                        )
+
+                state["progress"]["drugs_processed"].append(drug.lower())
+
             conn.commit()
-            save_progress(state['progress'])
-            
-            elapsed = time.time() - state['start_time']
-            rate = state['processed'] / elapsed * 60 if elapsed > 0 else 0
-            remaining = (state['total'] - state['processed']) / rate if rate > 0 else 0
-            logger.info(f"Progress: {state['processed']}/{state['total']} | "
-                       f"Interactions: {state['found_interactions']} | "
-                       f"Rate: {rate:.0f}/min | ETA: {remaining:.1f} min")
-    
+            save_progress(state["progress"])
+
+            elapsed = time.time() - state["start_time"]
+            rate = state["processed"] / elapsed * 60 if elapsed > 0 else 0
+            remaining = (state["total"] - state["processed"]) / rate if rate > 0 else 0
+            logger.info(
+                f"Progress: {state['processed']}/{state['total']} | "
+                f"Interactions: {state['found_interactions']} | "
+                f"Rate: {rate:.0f}/min | ETA: {remaining:.1f} min"
+            )
+
     async def run_all():
         """Main async entry point."""
         semaphore = asyncio.Semaphore(workers)
         conn = sqlite3.connect(str(DB_PATH), timeout=30)
-        
+
         # Ensure table exists
-        conn.execute('''
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS drug_lab_interaction (
                 id INTEGER PRIMARY KEY,
                 drug_name TEXT NOT NULL,
@@ -512,44 +592,46 @@ def fetch_drug_labels_parallel(to_process: list, progress: dict, workers: int):
                 source TEXT DEFAULT 'DailyMed',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_drug_lab_drug ON drug_lab_interaction(drug_name)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_drug_lab_keyword ON drug_lab_interaction(keyword)')
-        
+        """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_drug_lab_drug ON drug_lab_interaction(drug_name)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_drug_lab_keyword ON drug_lab_interaction(keyword)"
+        )
+
         try:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 for batch_start in range(0, len(to_process), BATCH_SIZE):
-                    batch = to_process[batch_start:batch_start + BATCH_SIZE]
-                    
-                    tasks = [
-                        fetch_single(drug, semaphore, executor)
-                        for drug in batch
-                    ]
-                    
+                    batch = to_process[batch_start : batch_start + BATCH_SIZE]
+
+                    tasks = [fetch_single(drug, semaphore, executor) for drug in batch]
+
                     results = await asyncio.gather(*tasks, return_exceptions=True)
-                    
+
                     valid_results = []
                     for i, r in enumerate(results):
                         if isinstance(r, Exception):
                             logger.warning(f"Exception for {batch[i]}: {r}")
                         else:
                             valid_results.append(r)
-                    
+
                     await process_results(valid_results, conn)
-                    
+
         except KeyboardInterrupt:
             logger.info("\nInterrupted. Saving progress...")
         finally:
             conn.commit()
-            save_progress(state['progress'])
+            save_progress(state["progress"])
             conn.close()
-    
+
     try:
         asyncio.run(run_all())
     except KeyboardInterrupt:
         pass
-    
-    elapsed = time.time() - state['start_time']
+
+    elapsed = time.time() - state["start_time"]
     print("\n" + "=" * 50)
     print("DAILYMED FETCH COMPLETE (PARALLEL MODE)")
     print("=" * 50)
@@ -561,22 +643,26 @@ def fetch_drug_labels_parallel(to_process: list, progress: dict, workers: int):
 def status():
     """Show current status."""
     progress = load_progress()
-    
-    drugs_done = len(progress.get('drugs_processed', []))
-    
+
+    drugs_done = len(progress.get("drugs_processed", []))
+
     # Count cache files
-    search_cached = len(list((CACHE_DIR / "search").glob("*.json"))) if (CACHE_DIR / "search").exists() else 0
-    labels_cached = len(list((CACHE_DIR / "labels").glob("*.json"))) if (CACHE_DIR / "labels").exists() else 0
-    
+    search_cached = (
+        len(list((CACHE_DIR / "search").glob("*.json"))) if (CACHE_DIR / "search").exists() else 0
+    )
+    labels_cached = (
+        len(list((CACHE_DIR / "labels").glob("*.json"))) if (CACHE_DIR / "labels").exists() else 0
+    )
+
     # Count DB entries
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
     try:
-        cursor = conn.execute('SELECT COUNT(*) FROM drug_lab_interaction')
+        cursor = conn.execute("SELECT COUNT(*) FROM drug_lab_interaction")
         db_count = cursor.fetchone()[0]
     except:
         db_count = 0
     conn.close()
-    
+
     print("DAILYMED FETCH STATUS")
     print("=" * 40)
     print(f"  Priority drugs: {len(PRIORITY_DRUGS)}")
@@ -584,39 +670,44 @@ def status():
     print(f"  Search cache: {search_cached} files")
     print(f"  Labels cache: {labels_cached} files")
     print(f"  Lab interactions in DB: {db_count}")
-    
-    if progress.get('last_run'):
+
+    if progress.get("last_run"):
         print(f"  Last run: {progress['last_run']}")
 
 
 def show_interactions(drug_name: str = None):
     """Show stored lab interactions."""
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
-    
+
     if drug_name:
-        cursor = conn.execute('''
+        cursor = conn.execute(
+            """
             SELECT drug_name, keyword, interaction_text 
             FROM drug_lab_interaction 
             WHERE LOWER(drug_name) LIKE LOWER(?)
-        ''', (f'%{drug_name}%',))
+        """,
+            (f"%{drug_name}%",),
+        )
     else:
-        cursor = conn.execute('''
+        cursor = conn.execute(
+            """
             SELECT drug_name, keyword, interaction_text 
             FROM drug_lab_interaction 
             ORDER BY drug_name
             LIMIT 50
-        ''')
-    
+        """
+        )
+
     rows = cursor.fetchall()
     conn.close()
-    
+
     if not rows:
         print("No interactions found.")
         return
-    
+
     print(f"Found {len(rows)} interactions:")
     print("=" * 60)
-    
+
     current_drug = None
     for drug, keyword, text in rows:
         if drug != current_drug:
@@ -627,9 +718,9 @@ def show_interactions(drug_name: str = None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Fetch drug-lab interactions from DailyMed FDA labels',
+        description="Fetch drug-lab interactions from DailyMed FDA labels",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f'''
+        epilog=f"""
 Examples:
   python fetch_dailymed.py --status           # Show status
   python fetch_dailymed.py --fetch            # Fetch all priority drugs
@@ -641,18 +732,25 @@ Examples:
 Parallel mode:
   Default workers: {DEFAULT_WORKERS}, Max workers: {MAX_WORKERS}
   DailyMed is fairly permissive, 4 workers is a good default.
-        '''
+        """,
     )
-    
-    parser.add_argument('--status', action='store_true', help='Show current status')
-    parser.add_argument('--fetch', action='store_true', help='Fetch drug labels')
-    parser.add_argument('--limit', type=int, help='Limit number of drugs to process')
-    parser.add_argument('--workers', '-w', type=int, default=1,
-                       help=f'Number of parallel workers (default: 1, max: {MAX_WORKERS})')
-    parser.add_argument('--show', nargs='?', const='', help='Show stored interactions (optionally filter by drug)')
-    
+
+    parser.add_argument("--status", action="store_true", help="Show current status")
+    parser.add_argument("--fetch", action="store_true", help="Fetch drug labels")
+    parser.add_argument("--limit", type=int, help="Limit number of drugs to process")
+    parser.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        default=1,
+        help=f"Number of parallel workers (default: 1, max: {MAX_WORKERS})",
+    )
+    parser.add_argument(
+        "--show", nargs="?", const="", help="Show stored interactions (optionally filter by drug)"
+    )
+
     args = parser.parse_args()
-    
+
     if args.status:
         status()
     elif args.fetch:

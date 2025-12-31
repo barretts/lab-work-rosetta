@@ -3,7 +3,6 @@
 import argparse
 import json
 import sys
-from typing import Optional
 
 from rosetta import __version__
 from rosetta.core.resolver import LabTestResolver
@@ -173,7 +172,10 @@ def cmd_range(resolver: LabTestResolver, args) -> int:
         print(f"LOINC: {args.code}")
         print(f"Sex:   {result.get('sex', 'Both')}")
         print(f"Age:   {result.get('age_low', '?')} - {result.get('age_high', '?')}")
-        print(f"Range: {result.get('reference_low', '?')} - {result.get('reference_high', '?')} {result.get('unit', '')}")
+        ref_low = result.get("reference_low", "?")
+        ref_high = result.get("reference_high", "?")
+        unit = result.get("unit", "")
+        print(f"Range: {ref_low} - {ref_high} {unit}")
     else:
         print(f"No reference range found for: {args.code}")
         return 1
