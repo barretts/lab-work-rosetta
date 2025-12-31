@@ -32,15 +32,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Project root is two levels up from scripts/fetch/
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 # Load API key from .env
-load_dotenv(Path(__file__).parent / ".env")
-load_dotenv(Path(__file__).parent / "raw_data" / "NCI_Thesaurus.FLAT" / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(PROJECT_ROOT / "raw_data" / "NCI_Thesaurus.FLAT" / ".env")
 
 UMLS_API_KEY = os.getenv("UMLS_API_KEY")
 
-DB_PATH = Path(__file__).parent / "clinical_rosetta.db"
-CACHE_DIR = Path(__file__).parent / "raw_data" / "umls_cache"
-PROGRESS_FILE = Path(__file__).parent / ".umls_progress.json"
+DB_PATH = PROJECT_ROOT / "clinical_rosetta.db"
+CACHE_DIR = PROJECT_ROOT / "raw_data" / "umls_cache"
+PROGRESS_FILE = PROJECT_ROOT / ".umls_progress.json"
 
 # API endpoints
 UMLS_BASE = "https://uts-ws.nlm.nih.gov/rest"

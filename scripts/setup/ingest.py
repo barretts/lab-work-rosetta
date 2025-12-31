@@ -13,12 +13,17 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 
-from schema import init_database, print_schema_summary
-
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("./raw_data")
-DB_PATH = "clinical_rosetta.db"
+# Project root is two levels up from scripts/setup/
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DATA_DIR = PROJECT_ROOT / "raw_data"
+DB_PATH = PROJECT_ROOT / "clinical_rosetta.db"
+
+# Import schema from same directory
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from schema import init_database, print_schema_summary
 
 
 # ============================================================================

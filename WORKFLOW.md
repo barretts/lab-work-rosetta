@@ -1,51 +1,84 @@
 # Clinical Rosetta Stone - Workflow Guide
 
-## Quick Reference
+## Project Structure
 
-```bash
-# Most common task - translate a file
-python translate.py your-file.txt -o output.csv
-
-# Single lookup with details
-python translate.py --single "Hemoglobin A1c"
-
-# CLI commands
-python rosetta_cli.py translate "ALT"
-python rosetta_cli.py lookup 718-7
-python rosetta_cli.py stats
+```
+blood-test-database/
+├── src/rosetta/           # API package (pip install -e .)
+│   ├── api/               # Flask REST API
+│   ├── core/              # Resolver, database utilities
+│   └── cli.py             # CLI entry point
+├── scripts/               # Data generation (standalone)
+│   ├── setup/             # Database setup & ingestion
+│   ├── fetch/             # API-based data fetchers
+│   └── tools/             # Utility scripts
+├── tests/                 # API tests
+├── raw_data/              # Downloaded datasets
+├── downloads/             # Manual downloads (LOINC)
+└── clinical_rosetta.db    # SQLite database
 ```
 
 ---
 
-## Workflow 1: Translate Lab Test Names
+## Quick Reference
 
-### From a file:
 ```bash
-# Input: text file with one test name per line
-python translate.py test-list.txt
+# Install the package
+pip install -e .
 
-# With custom output name
-python translate.py test-list.txt -o my_results.csv
+# CLI commands (after install)
+rosetta translate "ALT"
+rosetta lookup 718-7
+rosetta search glucose
+rosetta stats
 
-# With higher confidence threshold (fewer false matches)
-python translate.py test-list.txt -c 0.7
+# Start the API server
+make api
+# or: python -m rosetta.api
+
+# Check data fetch status
+make status
 ```
 
-### Single test:
+---
+
+## Workflow 1: Using the API
+
+### Start the server:
 ```bash
-python translate.py --single "Sodium Level"
-python translate.py --single "HbA1c"
-python translate.py --single "UA Protein"
+make api
+# Server runs at http://localhost:5000
 ```
 
-### Output columns:
-- `test_name` - Your input
-- `loinc_code` - Standardized LOINC code
-- `standard_name` - Official name
-- `confidence` - Match quality (1.0 = exact, 0.5+ = fuzzy)
-- `reference_low/high` - Normal range (adults)
-- `critical_low/high` - Panic values
-- `description` - Plain-English explanation
+### API Endpoints:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/translate?q=ALT` | GET | Translate test name → LOINC |
+| `/translate/batch` | POST | Batch translate (JSON array) |
+| `/loinc/718-7` | GET | Get LOINC code details |
+| `/search?q=glucose` | GET | Search for tests |
+| `/reference-range/718-7` | GET | Get reference ranges |
+| `/critical-values` | GET | Get critical values |
+| `/drugs?name=warfarin` | GET | Drug-lab interactions |
+| `/health` | GET | Health check |
+| `/stats` | GET | Database statistics |
+
+### Example API calls:
+```bash
+# Translate a test name
+curl "http://localhost:5000/translate?q=hemoglobin"
+
+# Batch translate
+curl -X POST http://localhost:5000/translate/batch \
+  -H "Content-Type: application/json" \
+  -d '["ALT", "AST", "Glucose"]'
+
+# Get LOINC details
+curl "http://localhost:5000/loinc/718-7"
+
+# Search
+curl "http://localhost:5000/search?q=glucose&limit=10"
+```
 
 ---
 
@@ -53,91 +86,106 @@ python translate.py --single "UA Protein"
 
 ### Translate shorthand to LOINC:
 ```bash
-python rosetta_cli.py translate "WBC"
-python rosetta_cli.py t "Alk Phos"  # shorthand
+rosetta translate "WBC"
+rosetta t "Alk Phos"  # shorthand
 ```
 
 ### Lookup LOINC code details:
 ```bash
-python rosetta_cli.py lookup 718-7
-python rosetta_cli.py l 2345-7  # shorthand
-```
-
-### Get reference ranges:
-```bash
-python rosetta_cli.py range 718-7
-python rosetta_cli.py range 2345-7 --age 45 --sex M
-```
-
-### Get critical values:
-```bash
-python rosetta_cli.py critical
-python rosetta_cli.py critical --loinc 2823-3
+rosetta lookup 718-7
+rosetta l 2345-7  # shorthand
 ```
 
 ### Search by name:
 ```bash
-python rosetta_cli.py search glucose
-python rosetta_cli.py search hemoglobin
+rosetta search glucose
+rosetta search hemoglobin --limit 20
+```
+
+### Get reference ranges:
+```bash
+rosetta range 718-7
+rosetta range 2345-7 --age 45 --sex M
 ```
 
 ### Batch translate:
 ```bash
-python rosetta_cli.py batch "WBC,RBC,HGB,PLT"
+rosetta batch "WBC,RBC,HGB,PLT"
 ```
 
 ### Database stats:
 ```bash
-python rosetta_cli.py stats
+rosetta stats
+```
+
+### JSON output:
+```bash
+rosetta translate "ALT" --json
+rosetta lookup 718-7 --json
 ```
 
 ---
 
 ## Workflow 3: Rebuild Database from Scratch
 
-If you need to rebuild the database:
+Use the scripts in `scripts/setup/`:
 
-### Step 1: Create schema
 ```bash
-python schema.py
-# Creates: clinical_rosetta.db with empty tables
-```
+# Or use make target:
+make setup-db
 
-### Step 2: Download public data
-```bash
-python downloader.py
-# Downloads: NHANES, NCI Thesaurus to raw_data/
-```
+# Manual steps:
+# Step 1: Create schema
+python scripts/setup/schema.py
 
-### Step 3: Ingest public data
-```bash
-python ingest.py
-# Ingests: NHANES reference ranges, NCI definitions
-```
+# Step 2: Download public data
+python scripts/setup/downloader.py
 
-### Step 4: Add LOINC (requires manual download)
-```bash
+# Step 3: Ingest public data
+python scripts/setup/ingest.py
+
+# Step 4: Add LOINC (requires manual download)
 # 1. Go to https://loinc.org/downloads/
 # 2. Register (free) and download LOINC Table
 # 3. Extract to downloads/Loinc_2.81/
+python scripts/setup/ingest_loinc.py
 
-python ingest_loinc.py
-# Ingests: 43,000+ LOINC codes, 161,000+ synonyms
-```
-
-### Step 5: Add enrichments
-```bash
-python enrichment.py
-# Adds: Curated LIS mappings, critical values, MedlinePlus descriptions
+# Step 5: Add enrichments
+python scripts/setup/enrichment.py
 ```
 
 ---
 
-## Workflow 4: Add Custom Mappings
+## Workflow 4: Fetch Additional Data
 
-### Option A: Edit enrichment.py
+Use the scripts in `scripts/fetch/` for long-running API fetches:
 
-Add to the `CURATED_LIS_MAPPINGS` dictionary:
+```bash
+# Or use make target:
+make fetch-all
+
+# Individual fetchers with parallel workers:
+
+# MedlinePlus consumer descriptions
+python scripts/fetch/fetch_descriptions.py --workers 5
+
+# UMLS/SNOMED mappings (requires API key in .env)
+python scripts/fetch/fetch_umls.py --snomed --workers 4
+
+# DailyMed drug-lab interactions
+python scripts/fetch/fetch_dailymed.py --fetch --workers 4
+
+# Check status of all fetchers
+make status
+```
+
+---
+
+## Workflow 5: Add Custom Mappings
+
+### Edit enrichment.py
+
+Add to the `CURATED_LIS_MAPPINGS` dictionary in `scripts/setup/enrichment.py`:
 
 ```python
 "My_Hospital_LIS": [
@@ -149,78 +197,98 @@ Add to the `CURATED_LIS_MAPPINGS` dictionary:
 
 Then run:
 ```bash
-python enrichment.py
-```
-
-### Option B: Use the auto-resolver's learning
-
-The resolver learns from usage. To manually confirm a mapping:
-
-```python
-from auto_resolver import AutoResolver
-resolver = AutoResolver()
-resolver.confirm("My Local Code", "1234-5")  # Boosts confidence
-resolver.close()
-```
-
----
-
-## Workflow 5: Fetch More Descriptions
-
-To fetch MedlinePlus descriptions for more tests:
-
-```python
-from enrichment import RosettaEnrichment
-enricher = RosettaEnrichment()
-enricher.fetch_medlineplus_descriptions(limit=100)  # Fetches 100 more
-enricher.close()
+python scripts/setup/enrichment.py
 ```
 
 ---
 
 ## Script Reference
 
-| Script | What it does | When to use |
-|--------|--------------|-------------|
-| `translate.py` | Translates files/single tests with enrichment | **Daily use** |
-| `rosetta_cli.py` | Command-line lookups | **Daily use** |
-| `auto_resolver.py` | Smart resolver (library) | Import in code |
-| `schema.py` | Creates database schema | Initial setup only |
-| `downloader.py` | Downloads NHANES, NCI | Initial setup only |
-| `ingest.py` | Ingests NHANES, NCI data | Initial setup only |
-| `ingest_loinc.py` | Ingests LOINC 2.81 | After LOINC download |
-| `enrichment.py` | Adds curated data, MedlinePlus | After adding mappings |
+### API Package (`src/rosetta/`)
+| Module | Description |
+|--------|-------------|
+| `rosetta.api` | Flask REST API |
+| `rosetta.cli` | Command-line interface |
+| `rosetta.core.resolver` | Lab test resolver |
+| `rosetta.core.database` | Database utilities |
+
+### Setup Scripts (`scripts/setup/`)
+| Script | Description |
+|--------|-------------|
+| `schema.py` | Creates database schema |
+| `downloader.py` | Downloads NHANES, NCI, etc. |
+| `ingest.py` | Ingests downloaded data |
+| `ingest_loinc.py` | Ingests LOINC table |
+| `enrichment.py` | Adds curated mappings |
+
+### Fetch Scripts (`scripts/fetch/`)
+| Script | Description |
+|--------|-------------|
+| `fetch_descriptions.py` | MedlinePlus descriptions |
+| `fetch_umls.py` | UMLS/SNOMED mappings |
+| `fetch_dailymed.py` | Drug-lab interactions |
+
+### Utility Scripts (`scripts/tools/`)
+| Script | Description |
+|--------|-------------|
+| `translate.py` | Batch file translation |
+| `auto_resolver.py` | Smart resolver library |
+
+---
+
+## Make Targets
+
+```bash
+make help          # Show all targets
+
+# API & Package
+make install       # Install package
+make install-dev   # Install with dev dependencies
+make api           # Start Flask API server
+make test          # Run tests
+
+# Data Generation
+make setup-db      # Initialize database
+make fetch-all     # Run all fetchers (parallel)
+make status        # Show fetch status
+
+# Development
+make format        # Format code (black, isort)
+make lint          # Check code style
+make clean         # Remove build artifacts
+```
 
 ---
 
 ## Troubleshooting
 
 ### "No mapping found"
-- Try the fuzzy search: `python rosetta_cli.py search "partial name"`
-- Add a custom mapping to `enrichment.py`
+- Try search: `rosetta search "partial name"`
+- Add custom mapping to `scripts/setup/enrichment.py`
 - Check spelling/abbreviations
 
 ### Low confidence matches
-- The resolver expands abbreviations (hgb → hemoglobin)
-- Confidence < 0.7 may be incorrect - verify manually
+- Resolver expands abbreviations (hgb → hemoglobin)
+- Confidence < 0.7 may be incorrect
 - Use `--confidence 0.7` for stricter matching
 
 ### Missing reference ranges
 - NHANES only covers common lab tests
 - Ranges are for ages 18-79, stratified by sex
-- Pediatric ranges require CALIPER data (not yet integrated)
 
 ### Missing descriptions
-- Run `enrichment.py` to fetch more from MedlinePlus
-- MedlinePlus has rate limits (100 req/min)
+- Run fetchers: `make fetch-all`
+- Check status: `make status`
 
 ---
 
 ## File Outputs
 
-| File | Contents |
+| Path | Contents |
 |------|----------|
-| `*_translated.csv` | Translation results with enrichment |
 | `clinical_rosetta.db` | SQLite database |
 | `raw_data/` | Downloaded source files |
-| `downloads/` | LOINC and other manual downloads |
+| `downloads/` | Manual downloads (LOINC) |
+| `.fetch_progress.json` | MedlinePlus fetch progress |
+| `.umls_progress.json` | UMLS fetch progress |
+| `.dailymed_progress.json` | DailyMed fetch progress |

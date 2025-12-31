@@ -12,8 +12,10 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent / "clinical_rosetta.db"
-LOINC_PATH = Path(__file__).parent / "downloads" / "Loinc_2.81"
+# Project root is two levels up from scripts/setup/
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DB_PATH = PROJECT_ROOT / "clinical_rosetta.db"
+LOINC_PATH = PROJECT_ROOT / "downloads" / "Loinc_2.81"
 
 # Lab-related LOINC classes to import
 LAB_CLASSES = ['CHEM', 'HEM/BC', 'SERO', 'UA', 'COAG', 'DRUG/TOX', 'MICRO', 'BLDBK', 'CELLMARK']

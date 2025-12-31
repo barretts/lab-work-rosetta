@@ -35,9 +35,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent / "clinical_rosetta.db"
-CACHE_DIR = Path(__file__).parent / "raw_data" / "dailymed_cache"
-PROGRESS_FILE = Path(__file__).parent / ".dailymed_progress.json"
+# Project root is two levels up from scripts/fetch/
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DB_PATH = PROJECT_ROOT / "clinical_rosetta.db"
+CACHE_DIR = PROJECT_ROOT / "raw_data" / "dailymed_cache"
+PROGRESS_FILE = PROJECT_ROOT / ".dailymed_progress.json"
 
 # DailyMed API
 BASE_URL = "https://dailymed.nlm.nih.gov/dailymed/services/v2"

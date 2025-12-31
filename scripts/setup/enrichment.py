@@ -15,8 +15,10 @@ from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "clinical_rosetta.db"
-DATA_DIR = Path("./raw_data")
+# Project root is two levels up from scripts/setup/
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DB_PATH = PROJECT_ROOT / "clinical_rosetta.db"
+DATA_DIR = PROJECT_ROOT / "raw_data"
 
 
 # ============================================================================

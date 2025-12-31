@@ -1,7 +1,19 @@
+# Data directories
 raw_data/
+downloads/
+
+# Progress tracking files
 .dailymed_progress.json
 .fetch_progress.json
 .umls_progress.json
+
+# Database files
+*.db
+*.db-journal
+
+# Output files
+*_translated.csv
+*_enriched.csv
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

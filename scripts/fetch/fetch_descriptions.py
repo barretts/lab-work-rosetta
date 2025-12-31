@@ -34,9 +34,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent / "clinical_rosetta.db"
-PROGRESS_FILE = Path(__file__).parent / ".fetch_progress.json"
-CACHE_DIR = Path(__file__).parent / "raw_data" / "medlineplus_cache"
+# Project root is two levels up from scripts/fetch/
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DB_PATH = PROJECT_ROOT / "clinical_rosetta.db"
+PROGRESS_FILE = PROJECT_ROOT / ".fetch_progress.json"
+CACHE_DIR = PROJECT_ROOT / "raw_data" / "medlineplus_cache"
 
 # MedlinePlus Connect API
 MEDLINEPLUS_URL = "https://connect.medlineplus.gov/service"

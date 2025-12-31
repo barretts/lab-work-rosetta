@@ -26,9 +26,12 @@ from typing import Optional, List, Dict, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
+# Project root is two levels up from scripts/setup/
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 # Configuration
-DATA_DIR = Path("./raw_data")
-DOWNLOADS_DIR = Path("./downloads")
+DATA_DIR = PROJECT_ROOT / "raw_data"
+DOWNLOADS_DIR = PROJECT_ROOT / "downloads"
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 # Parallel processing defaults

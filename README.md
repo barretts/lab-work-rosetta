@@ -1,101 +1,163 @@
 # Clinical Rosetta Stone
 
-An open-source database that translates non-standard LIS (Laboratory Information System) shorthands into standardized LOINC codes, enriched with reference ranges, critical values, and plain-English descriptions.
+An open-source database and API that translates non-standard LIS (Laboratory Information System) shorthands into standardized LOINC codes, enriched with reference ranges, critical values, and plain-English descriptions.
 
 ## Features
 
+- **REST API** - Flask-based API for translations and lookups
+- **CLI** - Command-line interface for quick lookups
 - **Auto-translation** of lab test shorthands to LOINC codes
 - **Fuzzy matching** with abbreviation expansion (80+ medical abbreviations)
-- **Self-learning** - improves from usage
-- **Reference ranges** from NHANES population data (age/sex stratified)
-- **Critical values** from CAP/CLSI/SAMHSA guidelines
-- **Plain-English descriptions** from MedlinePlus
+- **Reference ranges** from NHANES population data
+- **Consumer descriptions** from MedlinePlus (11,000+)
+- **Drug-lab interactions** from DailyMed FDA labels
+- **SNOMED mappings** via UMLS
 - **161,000+ synonyms** from official LOINC
 
-## Database Contents
+## Project Structure
 
-| Data | Count |
-|------|-------|
-| LOINC codes | 43,651 |
-| LIS mappings | 43,924 |
-| Synonyms | 161,691 |
-| Reference distributions | 1,860 |
-| Critical value rules | 46 |
-| NCI definitions | 72,705 |
-
-## Quick Start
-
-```bash
-# Translate a file of test names
-python translate.py test-list.txt -o results.csv
-
-# Translate a single test
-python translate.py --single "Hemoglobin A1c"
-
-# CLI lookup
-python rosetta_cli.py translate "ALT"
-python rosetta_cli.py lookup 718-7
-python rosetta_cli.py range 2345-7 --age 45 --sex M
+```
+blood-test-database/
+├── src/rosetta/           # API package (pip install -e .)
+│   ├── api/               # Flask REST API
+│   ├── core/              # Resolver, database utilities
+│   └── cli.py             # CLI entry point
+├── scripts/               # Data generation (standalone)
+│   ├── setup/             # Database setup & ingestion
+│   ├── fetch/             # API-based data fetchers
+│   └── tools/             # Utility scripts
+├── tests/                 # API tests
+├── raw_data/              # Downloaded datasets (gitignored)
+├── downloads/             # Manual downloads like LOINC (gitignored)
+└── clinical_rosetta.db    # SQLite database (gitignored)
 ```
 
-## Installation
+## Quick Start (Pre-built Database)
+
+If you have access to a pre-built `clinical_rosetta.db`:
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd blood-test-database
+# Install the package
+pip install -e .
 
-# Install dependencies
-pip install pandas requests openpyxl
+# CLI usage
+rosetta translate "ALT"
+rosetta lookup 718-7
+rosetta search glucose
+rosetta stats
 
-# The database (clinical_rosetta.db) is pre-built
-# Or rebuild from scratch - see WORKFLOW.md
+# Start API server
+make api
+# or: python -m rosetta.api
 ```
 
-## Scripts
+## Building from Scratch
 
-| Script | Purpose |
-|--------|---------|
-| `translate.py` | Main translation tool with enrichment |
-| `rosetta_cli.py` | Command-line interface for lookups |
-| `auto_resolver.py` | Smart resolver with fuzzy matching and learning |
-| `schema.py` | Database schema definition |
-| `downloader.py` | Downloads NHANES, NCI Thesaurus, etc. |
-| `ingest.py` | Ingests NHANES and NCI data |
-| `ingest_loinc.py` | Ingests LOINC 2.81 (requires manual download) |
-| `enrichment.py` | Adds curated mappings, critical values, MedlinePlus |
+### Prerequisites
+
+```bash
+# Install the package with dependencies
+pip install -e .
+
+# Additional dependencies for data generation
+pip install pandas lxml python-dotenv
+```
+
+### Step 1: Create Schema & Download Public Data
+
+```bash
+python scripts/setup/schema.py
+python scripts/setup/downloader.py
+python scripts/setup/ingest.py
+```
+
+### Step 2: Download LOINC (Manual - Required)
+
+1. Go to https://loinc.org/downloads/
+2. Register (free) and download "LOINC Table" (full package)
+3. Extract to `downloads/Loinc_2.81/`
+4. Run ingestion:
+
+```bash
+python scripts/setup/ingest_loinc.py
+```
+
+### Step 3: Add Enrichments
+
+```bash
+python scripts/setup/enrichment.py
+```
+
+### Step 4: Fetch Additional Data (Optional, Long-running)
+
+```bash
+# Set UMLS API key in .env (get free key at https://uts.nlm.nih.gov/)
+echo "UMLS_API_KEY=your-key-here" > .env
+
+# Fetch MedlinePlus descriptions (~12 hours for all 43k codes)
+python scripts/fetch/fetch_descriptions.py --workers 5
+
+# Fetch UMLS/SNOMED mappings (~6 hours)
+python scripts/fetch/fetch_umls.py --snomed --workers 4
+
+# Fetch drug-lab interactions (~30 min)
+python scripts/fetch/fetch_dailymed.py --fetch --workers 4
+
+# Check status anytime
+make status
+```
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | API info |
+| `/health` | GET | Health check |
+| `/stats` | GET | Database statistics |
+| `/translate?q=ALT` | GET | Translate test name → LOINC |
+| `/translate/batch` | POST | Batch translate (JSON array) |
+| `/loinc/<code>` | GET | LOINC code details |
+| `/search?q=glucose` | GET | Search for tests |
+| `/reference-range/<code>` | GET | Reference ranges |
+| `/critical-values` | GET | Critical values |
+| `/drugs` | GET | Drug-lab interactions |
+
+## Make Targets
+
+```bash
+make help          # Show all targets
+
+# API & Package
+make install       # Install package
+make install-dev   # Install with dev dependencies
+make api           # Start Flask API server
+make test          # Run tests
+
+# Data Generation
+make setup-db      # Run full database setup
+make fetch-all     # Run all fetchers (parallel)
+make status        # Show fetch status
+
+# Development
+make format        # Format code (black, isort)
+make lint          # Check code style
+make clean         # Remove build artifacts
+```
 
 ## Data Sources
 
 | Source | License | What it provides |
 |--------|---------|------------------|
-| [LOINC](https://loinc.org) | Free (registration required) | Standard lab test codes, names, synonyms |
+| [LOINC](https://loinc.org) | Free (registration) | Standard codes, names, synonyms |
 | [NHANES](https://www.cdc.gov/nchs/nhanes/) | Public Domain | Population reference ranges |
 | [NCI Thesaurus](https://ncithesaurus.nci.nih.gov/) | Public Domain | Medical definitions |
-| [MedlinePlus](https://medlineplus.gov/) | Public Domain | Consumer-friendly descriptions |
-| CAP/CLSI Guidelines | Published literature | Critical values |
-| SAMHSA | Federal guidelines | Drug screen cutoffs |
-
-## Output Format
-
-The translator produces CSV with these columns:
-
-| Column | Description |
-|--------|-------------|
-| `test_name` | Original LIS shorthand |
-| `loinc_code` | Resolved LOINC code |
-| `standard_name` | Official LOINC name |
-| `confidence` | Match confidence (0-1) |
-| `reference_low` | Lower reference limit |
-| `reference_high` | Upper reference limit |
-| `unit` | Unit of measure |
-| `critical_low` | Critical low threshold |
-| `critical_high` | Critical high threshold |
-| `description` | Plain-English description |
+| [MedlinePlus](https://medlineplus.gov/) | Public Domain | Consumer descriptions |
+| [DailyMed](https://dailymed.nlm.nih.gov/) | Public Domain | Drug-lab interactions |
+| [UMLS](https://uts.nlm.nih.gov/) | Free (registration) | SNOMED mappings |
 
 ## Adding Custom Mappings
 
-Edit `enrichment.py` and add to `CURATED_LIS_MAPPINGS`:
+Edit `scripts/setup/enrichment.py` and add to `CURATED_LIS_MAPPINGS`:
 
 ```python
 "My_Hospital": [
@@ -104,7 +166,7 @@ Edit `enrichment.py` and add to `CURATED_LIS_MAPPINGS`:
 ]
 ```
 
-Then run: `python enrichment.py`
+Then run: `python scripts/setup/enrichment.py`
 
 ## License
 
@@ -112,14 +174,9 @@ Database schema and scripts: MIT License
 
 Data sources retain their original licenses (see table above).
 
-## Contributing
-
-1. Fork the repository
-2. Add mappings with source documentation
-3. Submit a pull request
-
 ## See Also
 
-- [WORKFLOW.md](WORKFLOW.md) - Step-by-step usage guide
+- [WORKFLOW.md](WORKFLOW.md) - Detailed usage guide
 - [ROADMAP.md](ROADMAP.md) - Future development plans
 - [RESEARCH_FINDINGS.md](RESEARCH_FINDINGS.md) - Data source research
+- [scripts/README.md](scripts/README.md) - Data generation scripts
